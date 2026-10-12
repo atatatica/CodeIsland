@@ -25,6 +25,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>CodeIsland shows today's events and the week ahead in the island.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>CodeIsland shows today's events and the week ahead in the island.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>CodeIsland needs to control terminal apps to jump to the correct window and tab when you click a session.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
@@ -38,7 +42,7 @@
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/wxtsky/CodeIsland/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>

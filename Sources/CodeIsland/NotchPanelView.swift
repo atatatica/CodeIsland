@@ -130,11 +130,15 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
     @AppStorage(SettingsKey.hoverExpandDelay) private var hoverExpandDelay = SettingsDefaults.hoverExpandDelay
     @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
+    @AppStorage(SettingsKey.showCalendar) private var showCalendar = SettingsDefaults.showCalendar
+    @AppStorage(SettingsKey.showUsageStats) private var showUsageStats = SettingsDefaults.showUsageStats
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
     @State private var isHovered = false
     @State private var idleHovered = false
+    /// Idle island opened into the agenda (hover rested past the expand delay).
+    @State private var agendaOpen = false
     /// Three-stage hover: collapsed → prehover (immediate ack) → expanded (after delay)
     @State private var hoverPhase: NotchHoverPhase = .collapsed
     /// Curtain animation for tool status toggle
@@ -162,6 +166,12 @@ struct NotchPanelView: View {
     private var shouldShowExpanded: Bool {
         showBar && appState.surface.isExpanded
     }
+    /// The idle island's hover panel: today's agenda instead of an empty bar.
+    private var showAgenda: Bool {
+        showIdleIndicator && agendaOpen && showCalendar
+    }
+    /// Either expanded look — the session surfaces or the idle agenda.
+    private var isOpenLook: Bool { shouldShowExpanded || showAgenda }
     /// Prehover acknowledgement is only rendered on the collapsed active bar —
     /// once the surface expands (from hover or any other path) it disappears.
     private var shouldShowPrehover: Bool {
@@ -195,6 +205,7 @@ struct NotchPanelView: View {
     /// Total panel width — adapts based on state and screen geometry
     private var panelWidth: CGFloat {
         let nw = effectiveNotchW
+        if showAgenda { return min(max(nw + 200, 580), maxPanelWidth) }
         if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
         if !isActive { return hasNotch ? nw - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxPanelWidth) }
@@ -298,6 +309,14 @@ struct NotchPanelView: View {
                         hasNotch: hasNotch,
                         hovered: idleHovered
                     )
+                    if showAgenda {
+                        Line()
+                            .stroke(.white.opacity(0.15), style: StrokeStyle(lineWidth: 0.5, dash: [4, 3]))
+                            .frame(height: 0.5)
+                            .padding(.horizontal, 12)
+                        AgendaPanel(appState: appState, showClaudeQuota: showClaudeQuota, showUsageStats: showUsageStats)
+                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                    }
                 } else {
                     // Idle: just the notch shell
                     Spacer()
@@ -386,8 +405,13 @@ struct NotchPanelView: View {
                         SessionListView(appState: appState, onlySessionId: appState.justCompletedSessionId)
                             .transition(.blurFade.combined(with: .move(edge: .top)))
                     case .sessionList:
-                        SessionListView(appState: appState, onlySessionId: nil)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                        if showCalendar && CalendarStore.shared.agendaInList {
+                            AgendaPanel(appState: appState, showClaudeQuota: showClaudeQuota, showUsageStats: showUsageStats)
+                                .transition(.blurFade.combined(with: .scale(scale: 0.98, anchor: .top)))
+                        } else {
+                            SessionListView(appState: appState, onlySessionId: nil)
+                                .transition(.blurFade.combined(with: .move(edge: .top)))
+                        }
                     case .collapsed:
                         EmptyView()
                     }
@@ -398,8 +422,8 @@ struct NotchPanelView: View {
             .clipped()
             .background(
                 NotchPanelShape(
-                    topExtension: shouldShowExpanded ? 14 : 3,
-                    bottomRadius: shouldShowExpanded ? 24 : 12,
+                    topExtension: isOpenLook ? 14 : 3,
+                    bottomRadius: isOpenLook ? 24 : 12,
                     minHeight: notchHeight
                 )
                 .fill(.black)
@@ -435,15 +459,36 @@ struct NotchPanelView: View {
                 // Idle indicator hover — delay un-hover to prevent oscillation when
                 // the animated width change crosses the mouse position (#52).
                 if showIdleIndicator {
+                    isHovered = hovering
                     if hovering {
                         hoverTimer?.invalidate()
                         hoverTimer = nil
                         withAnimation(NotchAnimation.micro) { idleHovered = true }
+                        // Resting on the idle island opens today's agenda.
+                        guard showCalendar, !agendaOpen else { return }
+                        hoverTimer = Timer.scheduledTimer(
+                            withTimeInterval: NotchHoverInteraction.expandDelay(forSetting: hoverExpandDelay),
+                            repeats: false
+                        ) { _ in
+                            Task { @MainActor in
+                                guard isHovered, showIdleIndicator else { return }
+                                if hapticOnHover {
+                                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+                                }
+                                withAnimation(NotchAnimation.open) { agendaOpen = true }
+                            }
+                        }
                     } else {
                         hoverTimer?.invalidate()
-                        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
+                        // The open agenda gets the same grace as the session list.
+                        let delay = agendaOpen ? NotchHoverInteraction.collapseDelay : 0.3
+                        hoverTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
                             Task { @MainActor in
-                                withAnimation(NotchAnimation.micro) { idleHovered = false }
+                                guard !isHovered else { return }
+                                withAnimation(agendaOpen ? NotchAnimation.close : NotchAnimation.micro) {
+                                    agendaOpen = false
+                                    idleHovered = false
+                                }
                             }
                         }
                     }
@@ -542,12 +587,17 @@ struct NotchPanelView: View {
             .onChange(of: appState.surface) { _, newSurface in
                 // The surface can change from outside the hover flow (auto-expand
                 // cards, click-to-close, …) — keep the phase from going stale.
+                if newSurface == .collapsed {
+                    CalendarStore.shared.agendaInList = false
+                }
                 if newSurface == .collapsed && !isHovered {
                     hoverPhase = .collapsed
                 } else if newSurface.isExpanded && hoverPhase != .expanded {
                     hoverPhase = .expanded
                 }
             }
+            // A session starting while the agenda is open takes the island back.
+            .onChange(of: isActive) { _, _ in agendaOpen = false }
             // Outside onHover on purpose: the hover region moves with the bar.
             .offset(x: quotaReserve.shift + rightWingReserve / 2)
 
@@ -569,6 +619,7 @@ struct NotchPanelView: View {
             panelWidth: panelWidth, notchWidth: notchW, hasNotch: hasNotch
         ))
         .animation(NotchAnimation.open, value: appState.surface)
+        .animation(NotchAnimation.open, value: CalendarStore.shared.agendaInList)
     }
 }
 
@@ -1113,6 +1164,7 @@ struct NotchIconButton: View {
 /// The expanded header's buttons: sound, Settings, and Quit, which asks once.
 private struct ExpandedHeaderControls: View {
     @Binding var soundEnabled: Bool
+    @AppStorage(SettingsKey.showCalendar) private var showCalendar = SettingsDefaults.showCalendar
     @StateObject private var quit = QuitConfirmation()
     @ObservedObject private var l10n = L10n.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1120,6 +1172,9 @@ private struct ExpandedHeaderControls: View {
     var body: some View {
         // 4pt between 24pt hit targets keeps the 6pt gap between the circles.
         HStack(spacing: 4) {
+            if showCalendar {
+                AgendaToggleButton()
+            }
             NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                 soundEnabled.toggle()
             }
@@ -2828,6 +2883,7 @@ private struct SessionListView: View {
     @AppStorage(SettingsKey.sessionListDensity) private var densityRaw = SettingsDefaults.sessionListDensity
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
     @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
+    @AppStorage(SettingsKey.showCalendar) private var showCalendar = SettingsDefaults.showCalendar
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Natural height of the session cards, scrolling or not.
     @State private var contentHeight: CGFloat = 0
@@ -3046,6 +3102,9 @@ private struct SessionListView: View {
             // Full session list only — the completion card stays focused on
             // the finished session.
             if onlySessionId == nil {
+                if showCalendar {
+                    NextEventStrip()
+                }
                 SessionListFooter(appState: appState, showUsageStats: showUsageStats, showClaudeQuota: showClaudeQuota)
             }
         }
@@ -3439,7 +3498,7 @@ enum UsageFooterText {
 
 /// The session list's footer (SessionListFooterContent): plan limits first
 /// when they're on, otherwise the token totals in words.
-private struct SessionListFooter: View {
+struct SessionListFooter: View {
     var appState: AppState
     let showUsageStats: Bool
     let showClaudeQuota: Bool

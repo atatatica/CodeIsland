@@ -101,6 +101,9 @@ build_mac() {
         "$APP_BUNDLE/Contents/Helpers/codeisland-bridge" 2>/dev/null || true
 
     echo "Compiling app icon assets..."
+    # actool ships with Xcode only; with just the Command Line Tools the
+    # prebuilt AppIcon.icns copied below is the icon.
+    if xcrun -f actool >/dev/null 2>&1; then
     xcrun actool \
         --output-format human-readable-text \
         --warnings \
@@ -114,6 +117,9 @@ build_mac() {
         --compile "$APP_BUNDLE/Contents/Resources" \
         "$ICON_CATALOG" \
         "$ICON_SOURCE"
+    else
+        echo "actool not found (no Xcode) — using prebuilt AppIcon.icns"
+    fi
     cp "Sources/CodeIsland/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
     # Copy SPM resource bundles into Contents/Resources/ (required for code signing)
