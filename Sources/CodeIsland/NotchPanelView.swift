@@ -132,6 +132,12 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
     @AppStorage(SettingsKey.showCalendar) private var showCalendar = SettingsDefaults.showCalendar
     @AppStorage(SettingsKey.showUsageStats) private var showUsageStats = SettingsDefaults.showUsageStats
+    @AppStorage(SettingsKey.rightWingShows) private var rightWingShows = SettingsDefaults.rightWingShows
+
+    /// The left plan-limit chip, unless the right wing already shows usage.
+    private var leftQuotaChip: Bool {
+        showClaudeQuota && !RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows)
+    }
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -170,6 +176,12 @@ struct NotchPanelView: View {
     private var showAgenda: Bool {
         showIdleIndicator && agendaOpen && showCalendar
     }
+    /// Room the hovered idle bar adds for the usage rings (vs the old "0").
+    private var idleUsageExtra: CGFloat {
+        guard RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows),
+              let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty else { return 0 }
+        return 70
+    }
     /// Either expanded look — the session surfaces or the idle agenda.
     private var isOpenLook: Bool { shouldShowExpanded || showAgenda }
     /// Prehover acknowledgement is only rendered on the collapsed active bar —
@@ -206,7 +218,7 @@ struct NotchPanelView: View {
     private var panelWidth: CGFloat {
         let nw = effectiveNotchW
         if showAgenda { return min(max(nw + 200, 580), maxPanelWidth) }
-        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
+        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 + idleUsageExtra : nw + compactWingWidth * 2 }
         if !isActive { return hasNotch ? nw - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxPanelWidth) }
         return collapsedBarWidth + quotaReserve.extraWidth + rightWingReserve
@@ -245,7 +257,7 @@ struct NotchPanelView: View {
     /// chip isn't shown, which leaves the bar exactly as it is without it.
     private var quotaReserve: QuotaChipLayout.Reserve {
         guard showBar, !shouldShowExpanded,
-              let limit = QuotaChip.limit(appState: appState, enabled: showClaudeQuota, modeRaw: claudeQuotaChip)
+              let limit = QuotaChip.limit(appState: appState, enabled: leftQuotaChip, modeRaw: claudeQuotaChip)
         else { return .none }
         // Measured once laid out; the label-length estimate covers the first frame.
         let chipWidth = quotaChipWidth > 0 ? quotaChipWidth : QuotaChip.estimatedWidth(for: limit)
@@ -302,6 +314,7 @@ struct NotchPanelView: View {
                     .onPreferenceChange(CompactRightWingWidthKey.self) { if $0 > 0 { rightWingWidth = $0 } }
                 } else if showIdleIndicator {
                     IdleIndicatorBar(
+                        appState: appState,
                         mascotSize: mascotSize,
                         compactWingWidth: compactWingWidth,
                         notchW: effectiveNotchW,
@@ -315,7 +328,7 @@ struct NotchPanelView: View {
                             .frame(height: 0.5)
                             .padding(.horizontal, 12)
                         AgendaPanel(appState: appState, showClaudeQuota: showClaudeQuota, showUsageStats: showUsageStats)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 } else {
                     // Idle: just the notch shell
@@ -407,7 +420,7 @@ struct NotchPanelView: View {
                     case .sessionList:
                         if showCalendar && CalendarStore.shared.agendaInList {
                             AgendaPanel(appState: appState, showClaudeQuota: showClaudeQuota, showUsageStats: showUsageStats)
-                                .transition(.blurFade.combined(with: .scale(scale: 0.98, anchor: .top)))
+                                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                         } else {
                             SessionListView(appState: appState, onlySessionId: nil)
                                 .transition(.blurFade.combined(with: .move(edge: .top)))
@@ -639,6 +652,7 @@ private struct CompactLeftWing: View {
     @AppStorage(SettingsKey.defaultSource) private var settingsDefaultSource = SettingsDefaults.defaultSource
     @AppStorage(SettingsKey.showClaudeQuota) private var showClaudeQuota = SettingsDefaults.showClaudeQuota
     @AppStorage(SettingsKey.claudeQuotaChip) private var claudeQuotaChip = SettingsDefaults.claudeQuotaChip
+    @AppStorage(SettingsKey.rightWingShows) private var rightWingShows = SettingsDefaults.rightWingShows
 
     private var displaySession: SessionSnapshot? {
         let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
@@ -688,7 +702,11 @@ private struct CompactLeftWing: View {
                         .frame(maxWidth: ToolNameDisplay.compactMaxWidth, alignment: .leading)
                         .transition(.opacity)
                         .help(tool)
-                } else if let limit = QuotaChip.limit(appState: appState, enabled: showClaudeQuota, modeRaw: claudeQuotaChip),
+                } else if let limit = QuotaChip.limit(
+                    appState: appState,
+                    enabled: showClaudeQuota && !RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows),
+                    modeRaw: claudeQuotaChip
+                ),
                           let snapshot = appState.claudeQuota.snapshot {
                     // Plan-limit chip takes the tool slot while no tool is
                     // running: window label + ring + percent, all windows in
@@ -820,6 +838,8 @@ private struct CompactRightWing: View {
     @AppStorage(SettingsKey.quietHoursEnabled) private var quietHoursEnabled = SettingsDefaults.quietHoursEnabled
     @AppStorage(SettingsKey.quietHoursStart) private var quietHoursStart = SettingsDefaults.quietHoursStart
     @AppStorage(SettingsKey.quietHoursEnd) private var quietHoursEnd = SettingsDefaults.quietHoursEnd
+    @AppStorage(SettingsKey.showClaudeQuota) private var showClaudeQuota = SettingsDefaults.showClaudeQuota
+    @AppStorage(SettingsKey.rightWingShows) private var rightWingShows = SettingsDefaults.rightWingShows
     /// The waiting badges pulse forever; with Reduce Motion they hold still
     /// (a one-off follow-up bounce still marks a reminder).
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -838,6 +858,13 @@ private struct CompactRightWing: View {
 
     private var displaySessionId: String? {
         appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
+    }
+    private var rightWingUsage: Bool {
+        RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows)
+    }
+    /// The count the usage replaced, still one hover away.
+    private var sessionCountTooltip: String {
+        String(format: l10n["right_wing_sessions_tooltip"], appState.activeSessionCount, appState.totalSessionCount)
     }
     private var projectName: String? {
         guard let sid = displaySessionId, let cwd = appState.sessions[sid]?.cwd, !cwd.isEmpty else { return nil }
@@ -893,36 +920,43 @@ private struct CompactRightWing: View {
                         .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                 }
 
-                if showToolStatus {
-                    // Detailed mode: session count (project name is shown in center on non-notch)
-                    HStack(spacing: 1) {
-                        let active = appState.activeSessionCount
-                        let total = appState.totalSessionCount
-                        if active > 0 {
-                            Text("\(active)")
-                                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                            Text("/")
-                                .foregroundStyle(.white.opacity(0.5))
-                        }
-                        Text("\(total)")
-                            .foregroundStyle(.white.opacity(0.9))
-                    }
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                if rightWingUsage, let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty {
+                    // Plan usage in place of the session count: 5-hour and
+                    // weekly windows, each a ring + percent.
+                    RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil)
+                        .help(sessionCountTooltip)
                 } else {
-                    // Simple mode: original session count only
-                    HStack(spacing: 1) {
-                        let active = appState.activeSessionCount
-                        let total = appState.totalSessionCount
-                        if active > 0 {
-                            Text("\(active)")
-                                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                            Text("/")
-                                .foregroundStyle(.white.opacity(0.5))
+                    if showToolStatus {
+                        // Detailed mode: session count (project name is shown in center on non-notch)
+                        HStack(spacing: 1) {
+                            let active = appState.activeSessionCount
+                            let total = appState.totalSessionCount
+                            if active > 0 {
+                                Text("\(active)")
+                                    .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                                Text("/")
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                            Text("\(total)")
+                                .foregroundStyle(.white.opacity(0.9))
                         }
-                        Text("\(total)")
-                            .foregroundStyle(.white.opacity(0.9))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    } else {
+                        // Simple mode: original session count only
+                        HStack(spacing: 1) {
+                            let active = appState.activeSessionCount
+                            let total = appState.totalSessionCount
+                            if active > 0 {
+                                Text("\(active)")
+                                    .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                                Text("/")
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                            Text("\(total)")
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
                     }
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
                 }
             }
         }
@@ -1313,6 +1347,7 @@ private struct SessionGroupingTabs: View {
 // MARK: - Idle Indicator Bar
 
 private struct IdleIndicatorBar: View {
+    var appState: AppState
     let mascotSize: CGFloat
     let compactWingWidth: CGFloat
     let notchW: CGFloat
@@ -1322,6 +1357,8 @@ private struct IdleIndicatorBar: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
+    @AppStorage(SettingsKey.showClaudeQuota) private var showClaudeQuota = SettingsDefaults.showClaudeQuota
+    @AppStorage(SettingsKey.rightWingShows) private var rightWingShows = SettingsDefaults.rightWingShows
     @StateObject private var quit = QuitConfirmation()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1342,9 +1379,14 @@ private struct IdleIndicatorBar: View {
                     // Gives way to the quit pill: the hovered bar is only a
                     // little wider than its buttons.
                     if !quit.isArmed {
-                        Text("0")
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.5))
+                        if RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows),
+                           let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty {
+                            RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil)
+                        } else {
+                            Text("0")
+                                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
                     }
 
                     HStack(spacing: 4) {
@@ -3299,6 +3341,56 @@ private struct QuotaPaceMark: ViewModifier {
 
 /// Collapsed-island chip: window label, a 9pt ring, and percent with its
 /// pace mark hung underneath.
+/// Compact plan usage for the collapsed right wing: "5h ◔ 34%  W ◔ 12%".
+/// Same colours as the left chip; full detail in the tooltip.
+struct RightWingUsage: View {
+    let snapshot: ClaudeQuotaSnapshot
+    let stale: Bool
+    @ObservedObject private var l10n = L10n.shared
+
+    static func enabled(showClaudeQuota: Bool, modeRaw: String) -> Bool {
+        showClaudeQuota && modeRaw == RightWingMode.usage.rawValue
+    }
+
+    private var shown: [ClaudeQuotaLimit] {
+        [snapshot.limit(.session), snapshot.limit(.weeklyAll)].compactMap { $0 }
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            HStack(spacing: 7) {
+                ForEach(shown, id: \.kind) { limit in
+                    let color = QuotaStyle.color(limit)
+                    HStack(spacing: 3) {
+                        Text(limit.kind == .session ? "5h" : "W")
+                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.45))
+                        ZStack {
+                            Circle().stroke(.white.opacity(0.18), lineWidth: 2)
+                            Circle()
+                                .trim(from: 0, to: min(limit.percent / 100, 1))
+                                .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                        }
+                        .frame(width: 9, height: 9)
+                        Text(ClaudeQuotaFormat.percent(limit.percent))
+                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(color)
+                            .contentTransition(.numericText())
+                    }
+                }
+            }
+            .opacity(stale ? 0.55 : 1)
+            .help(QuotaStyle.tooltip(snapshot, stale: stale, l10n: l10n, now: context.date))
+        }
+        .animation(NotchAnimation.micro, value: shown.map(\.percent))
+    }
+}
+
+enum RightWingMode: String {
+    case usage, sessions
+}
+
 struct QuotaChip: View {
     let limit: ClaudeQuotaLimit
     let snapshot: ClaudeQuotaSnapshot

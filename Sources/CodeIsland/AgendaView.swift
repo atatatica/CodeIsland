@@ -99,7 +99,7 @@ struct AgendaPanel: View {
                 case .granted:
                     dayContent(selected: selected, now: now)
                         .id(selected)
-                        .transition(.blurFade)
+                        .transition(.opacity)
                 case .unknown:
                     AgendaAccessCard(
                         icon: "calendar.badge.plus",
@@ -257,7 +257,6 @@ private struct AgendaHeroCard: View {
 
     @ObservedObject private var l10n = L10n.shared
     @State private var hovered = false
-    @State private var pulse = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color { Color(nsColor: event.color) }
@@ -268,7 +267,6 @@ private struct AgendaHeroCard: View {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(tint)
                 .frame(width: 4)
-                .shadow(color: tint.opacity(0.7), radius: pulse ? 6 : 2)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -277,8 +275,10 @@ private struct AgendaHeroCard: View {
                         .tracking(0.6)
                         .foregroundStyle(tint)
                     if ongoing {
-                        Circle().fill(tint).frame(width: 5, height: 5)
-                            .opacity(pulse ? 1 : 0.35)
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 5))
+                            .foregroundStyle(tint)
+                            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                     }
                 }
                 Text(event.title)
@@ -340,10 +340,6 @@ private struct AgendaHeroCard: View {
         .onHover { h in withAnimation(NotchAnimation.micro) { hovered = h } }
         .onTapGesture(perform: onTap)
         .help(event.calendarTitle)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { pulse = true }
-        }
     }
 }
 
@@ -411,7 +407,6 @@ private struct AllDayRow: View {
 
 private struct AgendaEmptyState: View {
     let text: String
-    @State private var float = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -421,8 +416,7 @@ private struct AgendaEmptyState: View {
                 .foregroundStyle(
                     LinearGradient(colors: [.yellow.opacity(0.9), .orange.opacity(0.8)], startPoint: .top, endPoint: .bottom)
                 )
-                .offset(y: float ? -1.5 : 1.5)
-                .rotationEffect(.degrees(float ? 6 : -6))
+                .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
             Text(text)
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(AgendaStyle.secondary)
@@ -431,10 +425,6 @@ private struct AgendaEmptyState: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(AgendaStyle.fill))
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) { float = true }
-        }
     }
 }
 
@@ -528,9 +518,10 @@ private struct Stagger: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // Opacity + offset only: they composite on the GPU for free,
+            // where a blur per row re-renders every frame of the open spring.
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared || reduceMotion ? 0 : -6)
-            .blur(radius: appeared || reduceMotion ? 0 : 3)
             .animation(
                 reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.82).delay(Double(index) * 0.045),
                 value: appeared

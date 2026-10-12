@@ -1295,6 +1295,7 @@ private struct AppearancePage: View {
     @AppStorage(SettingsKey.showUsageStats) private var showUsageStats = SettingsDefaults.showUsageStats
     @AppStorage(SettingsKey.showClaudeQuota) private var showClaudeQuota = SettingsDefaults.showClaudeQuota
     @AppStorage(SettingsKey.showCalendar) private var showCalendar = SettingsDefaults.showCalendar
+    @AppStorage(SettingsKey.rightWingShows) private var rightWingShows = SettingsDefaults.rightWingShows
     @AppStorage(SettingsKey.claudeQuotaChip) private var claudeQuotaChip = SettingsDefaults.claudeQuotaChip
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
     @AppStorage(SettingsKey.notchHeightMode) private var notchHeightModeRaw = SettingsDefaults.notchHeightMode
@@ -1479,6 +1480,11 @@ private struct AppearancePage: View {
                     Text(l10n["quota_chip_session"]).tag(ClaudeQuotaChipMode.session.rawValue)
                     Text(l10n["quota_chip_weekly"]).tag(ClaudeQuotaChipMode.weeklyAll.rawValue)
                     Text(l10n["quota_chip_weekly_model"]).tag(ClaudeQuotaChipMode.weeklyScoped.rawValue)
+                }
+                .disabled(!showClaudeQuota)
+                Picker(l10n["right_wing_shows"], selection: $rightWingShows) {
+                    Text(l10n["right_wing_usage"]).tag(RightWingMode.usage.rawValue)
+                    Text(l10n["right_wing_sessions"]).tag(RightWingMode.sessions.rawValue)
                 }
                 .disabled(!showClaudeQuota)
                 VStack(alignment: .leading, spacing: 2) {
