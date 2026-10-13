@@ -134,9 +134,11 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.showUsageStats) private var showUsageStats = SettingsDefaults.showUsageStats
     @AppStorage(SettingsKey.rightWingShows) private var rightWingShows = SettingsDefaults.rightWingShows
 
-    /// The left plan-limit chip, unless the right wing already shows usage.
-    private var leftQuotaChip: Bool {
-        showClaudeQuota && !RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows)
+    /// The left plan-limit chip. With usage in the right wing it carries the
+    /// 5-hour window and the right wing the weekly one, so the wings mirror.
+    private var leftQuotaChip: Bool { showClaudeQuota }
+    private var leftChipModeRaw: String {
+        RightWingUsage.leftChipModeRaw(showClaudeQuota: showClaudeQuota, rightWingRaw: rightWingShows, chipRaw: claudeQuotaChip)
     }
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
@@ -221,7 +223,9 @@ struct NotchPanelView: View {
         if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 + idleUsageExtra : nw + compactWingWidth * 2 }
         if !isActive { return hasNotch ? nw - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxPanelWidth) }
-        return collapsedBarWidth + quotaReserve.extraWidth + rightWingReserve
+        // On a notch both wings get the larger reserve, so the bar stays centred on it.
+        if hasNotch { return collapsedBarWidth + 2 * max(quotaReserve.extraWidth, rightWingReserve) }
+        return collapsedBarWidth + quotaReserve.extraWidth + rightWingReserve * 2
     }
 
     /// Room the collapsed right wing lacks to clear the notch; 0 whenever it fits.
@@ -257,7 +261,7 @@ struct NotchPanelView: View {
     /// chip isn't shown, which leaves the bar exactly as it is without it.
     private var quotaReserve: QuotaChipLayout.Reserve {
         guard showBar, !shouldShowExpanded,
-              let limit = QuotaChip.limit(appState: appState, enabled: leftQuotaChip, modeRaw: claudeQuotaChip)
+              let limit = QuotaChip.limit(appState: appState, enabled: leftQuotaChip, modeRaw: leftChipModeRaw)
         else { return .none }
         // Measured once laid out; the label-length estimate covers the first frame.
         let chipWidth = quotaChipWidth > 0 ? quotaChipWidth : QuotaChip.estimatedWidth(for: limit)
@@ -612,7 +616,7 @@ struct NotchPanelView: View {
             // A session starting while the agenda is open takes the island back.
             .onChange(of: isActive) { _, _ in agendaOpen = false }
             // Outside onHover on purpose: the hover region moves with the bar.
-            .offset(x: quotaReserve.shift + rightWingReserve / 2)
+            .offset(x: hasNotch ? 0 : quotaReserve.shift)
 
             Spacer()
                 .allowsHitTesting(false)
@@ -704,8 +708,8 @@ private struct CompactLeftWing: View {
                         .help(tool)
                 } else if let limit = QuotaChip.limit(
                     appState: appState,
-                    enabled: showClaudeQuota && !RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows),
-                    modeRaw: claudeQuotaChip
+                    enabled: showClaudeQuota,
+                    modeRaw: RightWingUsage.leftChipModeRaw(showClaudeQuota: showClaudeQuota, rightWingRaw: rightWingShows, chipRaw: claudeQuotaChip)
                 ),
                           let snapshot = appState.claudeQuota.snapshot {
                     // Plan-limit chip takes the tool slot while no tool is
@@ -923,7 +927,7 @@ private struct CompactRightWing: View {
                 if rightWingUsage, let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty {
                     // Plan usage in place of the session count: 5-hour and
                     // weekly windows, each a ring + percent.
-                    RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil)
+                    RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil, weeklyOnly: true)
                         .help(sessionCountTooltip)
                 } else {
                     if showToolStatus {
@@ -3346,14 +3350,21 @@ private struct QuotaPaceMark: ViewModifier {
 struct RightWingUsage: View {
     let snapshot: ClaudeQuotaSnapshot
     let stale: Bool
+    /// In the collapsed bar the 5-hour window sits in the left chip.
+    var weeklyOnly = false
     @ObservedObject private var l10n = L10n.shared
 
     static func enabled(showClaudeQuota: Bool, modeRaw: String) -> Bool {
         showClaudeQuota && modeRaw == RightWingMode.usage.rawValue
     }
 
+    /// The left chip's mode: the 5-hour window while the right wing shows usage.
+    static func leftChipModeRaw(showClaudeQuota: Bool, rightWingRaw: String, chipRaw: String) -> String {
+        enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingRaw) ? ClaudeQuotaChipMode.session.rawValue : chipRaw
+    }
+
     private var shown: [ClaudeQuotaLimit] {
-        [snapshot.limit(.session), snapshot.limit(.weeklyAll)].compactMap { $0 }
+        (weeklyOnly ? [snapshot.limit(.weeklyAll)] : [snapshot.limit(.session), snapshot.limit(.weeklyAll)]).compactMap { $0 }
     }
 
     var body: some View {
