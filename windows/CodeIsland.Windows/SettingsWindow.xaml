@@ -105,6 +105,8 @@
                 <TabItem Header="BEHAVIOR"><StackPanel Margin="18">
                     <TextBlock Text="SESSION CLEANUP (MINUTES)" FontWeight="Bold" Foreground="#FF9A9AA0"/><TextBox x:Name="CleanupMinutesBox" Width="130" HorizontalAlignment="Left" Margin="0,8,0,20"/>
                     <CheckBox x:Name="HideInFullscreenBox" Content="Hide panel in full-screen applications" Margin="0,0,0,12"/>
+                        <CheckBox x:Name="HoverToExpandBox" Content="Open the island when the pointer rests on it" Margin="0,0,0,12"/>
+                        <CheckBox x:Name="AutoExpandBox" Content="Open the island by itself for permission requests" Margin="0,0,0,12"/>
                     <TextBlock Text="Inactive sessions are removed automatically after this period." Foreground="#FF85858C"/>
                 </StackPanel></TabItem>
                 <TabItem Header="APPEARANCE"><Grid Margin="18"><Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition Width="150"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="52"/><RowDefinition Height="52"/></Grid.RowDefinitions>

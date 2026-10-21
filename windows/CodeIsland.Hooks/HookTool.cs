@@ -33,7 +33,9 @@ public static class KnownTools
     [
         new(AgentKind.Claude, "Claude Code", ["claude.exe", "claude.cmd", "claude"],
             [@".claude\settings.json", @".claude.json"], "codeisland-claude",
-            ["SessionStart", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop"], HookConfigurationFormat.Claude, 5, HookTimeoutUnit.Seconds),
+            ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+                "PermissionRequest", "Notification", "Stop", "StopFailure", "SubagentStart", "SubagentStop", "PreCompact"],
+            HookConfigurationFormat.Claude, 5, HookTimeoutUnit.Seconds),
         new(AgentKind.Codex, "Codex", ["codex.exe", "codex.cmd", "codex"],
             [@".codex\hooks.json", @".codex\config.json"], "codeisland-codex",
             ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop"],
@@ -63,5 +65,5 @@ public static class KnownTools
     ];
 
     public static int TimeoutFor(HookTool tool, string eventName) =>
-        tool.Agent == AgentKind.Codex && eventName == "PermissionRequest" ? 86400 : tool.CommandTimeout;
+        tool.Agent is AgentKind.Codex or AgentKind.Claude && eventName == "PermissionRequest" ? 86400 : tool.CommandTimeout;
 }

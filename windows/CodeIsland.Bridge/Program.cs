@@ -22,14 +22,28 @@ else if (mode == "send" && args.Length >= 2)
     var input = stdin ? await Console.In.ReadToEndAsync() : await File.ReadAllTextAsync(file
         ?? throw new ArgumentException("send requires --stdin or an event JSON file."));
     var agentEvent = ParseEvent(input, source, eventName);
+    if (agentEvent.ProcessId is null) agentEvent = agentEvent with { ProcessId = ParentProcess.Id() };
+    var isClaude = string.Equals(source, "claude", StringComparison.OrdinalIgnoreCase);
     await using var client = new PipeClient(userSid);
-    await client.ConnectWithRetryAsync(3, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(150));
-    var response = await client.SendAsync(
-        new PipeMessage(PipeMessageType.Event, Guid.NewGuid().ToString("N"), Event: agentEvent),
-        agentEvent.Type is AgentEventType.PermissionRequest or AgentEventType.Question
-            ? TimeSpan.FromHours(8)
-            : TimeSpan.FromSeconds(3));
-    Console.WriteLine(HookResponse(response, agentEvent, source));
+    PipeMessage response;
+    try
+    {
+        // The panel may not be running: a hook must never stall the agent waiting for it.
+        await client.ConnectWithRetryAsync(isClaude ? 1 : 3, TimeSpan.FromMilliseconds(isClaude ? 400 : 1000),
+            TimeSpan.FromMilliseconds(150));
+        response = await client.SendAsync(
+            new PipeMessage(PipeMessageType.Event, Guid.NewGuid().ToString("N"), Event: agentEvent),
+            agentEvent.Type is AgentEventType.PermissionRequest or AgentEventType.Question
+                ? TimeSpan.FromHours(8)
+                : TimeSpan.FromSeconds(3));
+    }
+    catch (Exception) when (isClaude)
+    {
+        // No panel (or it went away): stay silent, Claude Code falls back to its own prompt.
+        return 0;
+    }
+    var output = HookResponse(response, agentEvent, source);
+    if (output.Length > 0) Console.WriteLine(output);
 }
 else if (mode == "self-test")
 {
@@ -135,6 +149,8 @@ static JsonSerializerOptions CreateEventJsonOptions() => new(JsonSerializerDefau
 
 static string HookResponse(PipeMessage response, AgentEvent agentEvent, string? source)
 {
+    if (string.Equals(source, "claude", StringComparison.OrdinalIgnoreCase))
+        return ClaudeHookResponse(response, agentEvent);
     if (agentEvent.Type != AgentEventType.PermissionRequest
         || !string.Equals(source, "codex", StringComparison.OrdinalIgnoreCase)
         || response.Type != PipeMessageType.ActionResponse)
@@ -154,4 +170,41 @@ static string HookResponse(PipeMessage response, AgentEvent agentEvent, string? 
             decision = new { behavior }
         }
     });
+}
+
+// Claude Code reads hook stdout: plain text from SessionStart/UserPromptSubmit lands in the
+// model's context, so every event except an answered permission request prints nothing.
+static string ClaudeHookResponse(PipeMessage response, AgentEvent agentEvent)
+{
+    if (agentEvent.Type != AgentEventType.PermissionRequest || response.Type != PipeMessageType.ActionResponse)
+        return string.Empty;
+
+    var decision = new System.Text.Json.Nodes.JsonObject();
+    switch (response.Action)
+    {
+        case UserAction.Approve:
+            decision["behavior"] = "allow";
+            break;
+        case UserAction.AlwaysAllow:
+            decision["behavior"] = "allow";
+            // "Always" applies the rule Claude Code itself suggested for this request.
+            if (agentEvent.Payload is { ValueKind: JsonValueKind.Object } payload
+                && payload.TryGetProperty("permission_suggestions", out var suggestions)
+                && suggestions.ValueKind == JsonValueKind.Array && suggestions.GetArrayLength() > 0)
+                decision["updatedPermissions"] = System.Text.Json.Nodes.JsonNode.Parse(suggestions.GetRawText());
+            break;
+        default:
+            decision["behavior"] = "deny";
+            decision["message"] = "Denied from CodeIsland.";
+            break;
+    }
+    var root = new System.Text.Json.Nodes.JsonObject
+    {
+        ["hookSpecificOutput"] = new System.Text.Json.Nodes.JsonObject
+        {
+            ["hookEventName"] = "PermissionRequest",
+            ["decision"] = decision
+        }
+    };
+    return root.ToJsonString();
 }

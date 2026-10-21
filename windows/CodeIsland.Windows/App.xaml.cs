@@ -1,4 +1,4 @@
-﻿using System.Configuration;
+using System.Configuration;
 using System.Data;
 using System.Windows;
 
@@ -69,12 +69,9 @@ public partial class App : Application
         {
             _sounds.Play(agentEvent);
             _logger.Info($"Event received: agent={agentEvent.Agent} type={agentEvent.Type} tool={agentEvent.ToolName ?? "-"} session={agentEvent.SessionId}");
-            if (PanelAttentionPolicy.RequiresExpansion(agentEvent))
-                Dispatcher.BeginInvoke(() =>
-                {
-                    _window?.ExpandPanel();
-                    ShowPanel();
-                });
+            // The collapsed bar shows a bell for a waiting request; opening by itself is opt-in.
+            if (_settings.AutoExpandOnPermission && PanelAttentionPolicy.RequiresExpansion(agentEvent))
+                Dispatcher.BeginInvoke(() => _window?.ExpandPanel());
         };
         _codexTailer = new CodexSessionTailer();
         _codexTailer.EventReceived += (_, agentEvent) => Dispatcher.Invoke(() => Sessions.Apply(agentEvent));

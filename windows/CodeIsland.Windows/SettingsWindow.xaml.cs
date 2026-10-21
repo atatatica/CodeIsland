@@ -154,6 +154,8 @@ public partial class SettingsWindow : Window
         SoundEnabledBox.IsChecked = settings.SoundEnabled;
         CleanupMinutesBox.Text = settings.SessionCleanupMinutes.ToString();
         HideInFullscreenBox.IsChecked = settings.HideInFullscreen;
+        HoverToExpandBox.IsChecked = settings.HoverToExpand;
+        AutoExpandBox.IsChecked = settings.AutoExpandOnPermission;
         MaxSessionsBox.Text = settings.MaxVisibleSessions.ToString();
         HistoryLimitBox.Text = settings.EventHistoryLimit.ToString();
         ToggleShortcutBox.Text = settings.ToggleShortcut;
@@ -247,6 +249,8 @@ public partial class SettingsWindow : Window
             SoundEnabled = SoundEnabledBox.IsChecked == true,
             SessionCleanupMinutes = Parse(CleanupMinutesBox.Text, _settings.SessionCleanupMinutes),
             HideInFullscreen = HideInFullscreenBox.IsChecked == true,
+            HoverToExpand = HoverToExpandBox.IsChecked == true,
+            AutoExpandOnPermission = AutoExpandBox.IsChecked == true,
             MaxVisibleSessions = Parse(MaxSessionsBox.Text, _settings.MaxVisibleSessions),
             EventHistoryLimit = Parse(HistoryLimitBox.Text, _settings.EventHistoryLimit),
             ToggleShortcut = normalized[0],

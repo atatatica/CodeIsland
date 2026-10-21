@@ -21,8 +21,12 @@ public static class RawAgentEventNormalizer
 
         var agent = ParseAgent(sourceTag ?? FirstString(root, "_source", "source", "agent"));
         var type = ParseEventType(eventName, root);
-        var eventId = FirstString(root, "event_id", "eventId", "tool_use_id", "toolUseId", "call_id", "callId")
-            ?? $"{sessionId}:{eventName ?? type.ToString()}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        // A tool call id is shared by its Pre and Post hooks; tag it with the event so the
+        // state machine's duplicate filter does not swallow the second one.
+        var eventId = FirstString(root, "event_id", "eventId")
+            ?? (FirstString(root, "tool_use_id", "toolUseId", "call_id", "callId") is { } callId
+                ? $"{eventName ?? type.ToString()}:{callId}"
+                : $"{sessionId}:{eventName ?? type.ToString()}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}:{Guid.NewGuid():N}");
         var text = FirstString(root, "message", "question", "prompt", "response", "reason", "error");
         var toolName = FirstString(root, "tool_name", "toolName", "tool");
         var processId = FirstInt(root, "_ppid", "ppid", "process_id", "processId");
@@ -41,7 +45,8 @@ public static class RawAgentEventNormalizer
             "sessioncreated" => AgentEventType.SessionStart,
             "sessionend" or "sessionidle" or "stop" => AgentEventType.SessionEnd,
             "pretooluse" or "toolexecutebefore" or "toolstart" => AgentEventType.ToolStart,
-            "posttooluse" or "toolexecuteafter" or "toolend" => AgentEventType.ToolEnd,
+            "posttooluse" or "posttoolusefailure" or "toolexecuteafter" or "toolend" => AgentEventType.ToolEnd,
+            "stopfailure" => AgentEventType.Error,
             "permissionasked" or "permissionrequest" => AgentEventType.PermissionRequest,
             "question" => AgentEventType.Question,
             "notification" when FirstString(root, "question") is not null => AgentEventType.Question,

@@ -3,7 +3,7 @@ namespace CodeIsland.Windows;
 public sealed record AppSettings
 {
     public int Version { get; init; } = 1;
-    public string Language { get; init; } = "zh-CN";
+    public string Language { get; init; } = "en-US";
     public string DisplayMode { get; init; } = "primary";
     public bool LaunchAtLogin { get; init; }
     public bool SoundEnabled { get; init; } = true;
@@ -14,6 +14,10 @@ public sealed record AppSettings
     public string ToggleShortcut { get; init; } = "Ctrl+Shift+I";
     public string ApproveShortcut { get; init; } = "Ctrl+Shift+A";
     public string DenyShortcut { get; init; } = "Ctrl+Shift+D";
+    /// Open the island when the pointer rests on it (macOS: 0.3 s open, 0.5 s close).
+    public bool HoverToExpand { get; init; } = true;
+    /// Open the island by itself for a permission request (off by default).
+    public bool AutoExpandOnPermission { get; init; }
 
     public AppSettings Validate() => this with
     {
