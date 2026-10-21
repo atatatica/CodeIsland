@@ -65,6 +65,15 @@ public partial class MainWindow : Window
     private bool _renderQueued;
     private bool _modalOpen;
     private bool? _renderedExpanded;
+    private readonly TranslateTransform _hostShift = new();
+    private bool _hidden;
+    private DateTimeOffset _lastActivity = DateTimeOffset.UtcNow;
+    private static readonly TimeSpan IdleHideDelay = TimeSpan.FromSeconds(30);
+    private int _agendaGeneration;
+    private ContentControl? _agendaDate;
+    private StackPanel? _agendaDay;
+    private TranslateTransform? _dayHighlightShift;
+    private readonly List<(DateTime Day, TextBlock Weekday, TextBlock Number)> _dayCells = [];
     private string? _signature;
 
     public string HotKeyStatus => _hotKeys?.RegistrationSummary ?? "Shortcuts are not registered yet.";
@@ -81,6 +90,12 @@ public partial class MainWindow : Window
         _tracker.Changed += (_, _) =>
         {
             _quota.Nudge();
+            // An agent at work (or waiting on you) brings a hidden island back.
+            if (_tracker.ActiveCount > 0 || _tracker.AnyNeedsYou)
+            {
+                _lastActivity = DateTimeOffset.UtcNow;
+                Reveal();
+            }
             QueueRender();
         };
         _quota.Changed += (_, _) => QueueRender();
@@ -187,7 +202,23 @@ public partial class MainWindow : Window
         var h = _island.ActualHeight * transform.M22;
         var now = DateTimeOffset.UtcNow;
 
+        if (_hidden)
+        {
+            // Hidden above the screen edge: pushing the pointer against the top edge where the
+            // island lives brings it back, and the usual rest-to-open timer takes over.
+            var screenTop = Top * dpi.DpiScaleY;
+            var centerX = (Left + Width / 2) * dpi.DpiScaleX;
+            var half = (_island.Width / 2 + ShoulderSize + 30) * dpi.DpiScaleX;
+            if (cursor.Y <= screenTop + 2 * dpi.DpiScaleY && Math.Abs(cursor.X - centerX) <= half)
+            {
+                _lastActivity = now;
+                Reveal();
+            }
+            return;
+        }
+
         bool inside;
+
         if (_expanded)
         {
             var margin = 10 * transform.M11;
@@ -201,8 +232,15 @@ public partial class MainWindow : Window
                 && cursor.Y >= islandOrigin.Y - 2 && cursor.Y <= islandOrigin.Y + h + 4 * transform.M22;
         }
 
+        if (inside || _expanded || _modalOpen) _lastActivity = now;
+
         if (!_expanded)
         {
+            if (!inside && _tracker.ActiveCount == 0 && !_tracker.AnyNeedsYou && now - _lastActivity >= IdleHideDelay)
+            {
+                Conceal();
+                return;
+            }
             if (!_settings.HoverToExpand || !inside)
             {
                 _enteredAt = null;
@@ -233,9 +271,34 @@ public partial class MainWindow : Window
 
     private bool IsEditing() => Keyboard.FocusedElement is TextBox { Text.Length: > 0 };
 
+    /// No agent busy for 30 s: the island slides up out of sight (macOS hides an idle notch too).
+    private void Conceal()
+    {
+        if (_hidden) return;
+        _hidden = true;
+        _enteredAt = null;
+        var slide = new DoubleAnimation(-(CollapsedHeight + ShoulderSize + 6), TimeSpan.FromMilliseconds(320))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        };
+        Timeline.SetDesiredFrameRate(slide, 120);
+        _hostShift.BeginAnimation(TranslateTransform.YProperty, slide);
+    }
+
+    private void Reveal()
+    {
+        if (!_hidden) return;
+        _hidden = false;
+        var slide = new DoubleAnimation(0, SpringDuration(0.4)) { EasingFunction = new SpringEase { Response = 0.4, Damping = 0.86 } };
+        Timeline.SetDesiredFrameRate(slide, 120);
+        _hostShift.BeginAnimation(TranslateTransform.YProperty, slide);
+    }
+
     private void Expand()
     {
         if (_expanded) return;
+        Reveal();
+        _lastActivity = DateTimeOffset.UtcNow;
         _expanded = true;
         _leftAt = null;
         _calendar.Activate();
@@ -286,7 +349,8 @@ public partial class MainWindow : Window
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Top
+            VerticalAlignment = VerticalAlignment.Top,
+            RenderTransform = _hostShift
         };
         host.Children.Add(Shoulder(mirror: false));
         host.Children.Add(_island);
@@ -550,7 +614,7 @@ public partial class MainWindow : Window
     private FrameworkElement BuildCollapsed()
     {
         var focus = _tracker.Focus;
-        var row = new DockPanel { Height = CollapsedHeight, LastChildFill = true, Margin = new Thickness(10, 0, 10, 0) };
+        var row = new DockPanel { Height = CollapsedHeight, LastChildFill = true };
 
         // Right wing: waiting badge, session count, weekly usage.
         var right = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
@@ -597,7 +661,9 @@ public partial class MainWindow : Window
 
         // Centre: what the focused agent is doing, or the next event.
         row.Children.Add(CollapsedStatus(focus));
-        return row;
+        // Padding, not Margin: the face is centred by its Width, and a margin sat outside it,
+        // pushing the bar 10 px right and clipping the weekly chip.
+        return new Border { Height = CollapsedHeight, Padding = new Thickness(12, 0, 12, 0), Child = row };
     }
 
     private FrameworkElement CollapsedStatus(SessionInfo? focus)
@@ -1193,38 +1259,85 @@ public partial class MainWindow : Window
     {
         var now = DateTime.Now;
         var selected = _hoverDay ?? now.Date;
+        var generation = ++_agendaGeneration;
         var panel = new StackPanel { Margin = new Thickness(14, 4, 14, 4) };
 
         var header = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 10) };
-        var date = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        date.Children.Add(Text(selected.Day.ToString(), 30, Primary, Display, FontWeights.SemiBold, TextTrimming.None));
-        var dateText = new StackPanel { Margin = new Thickness(8, 4, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        dateText.Children.Add(Text(Capitalize(selected.ToString("dddd")), 12, Primary, Ui, FontWeights.SemiBold, TextTrimming.None));
-        dateText.Children.Add(Text(selected.ToString("M"), 11, Secondary, Ui, trimming: TextTrimming.None));
-        date.Children.Add(dateText);
-        DockPanel.SetDock(date, Dock.Left);
-        header.Children.Add(date);
-        var strip = WeekStrip(selected, now.Date);
+        _agendaDate = new ContentControl { Content = DateBlock(selected), VerticalAlignment = VerticalAlignment.Center, Focusable = false };
+        DockPanel.SetDock(_agendaDate, Dock.Left);
+        header.Children.Add(_agendaDate);
+        var strip = WeekStrip(selected, now.Date, generation);
         DockPanel.SetDock(strip, Dock.Right);
         header.Children.Add(strip);
         panel.Children.Add(header);
 
+        _agendaDay = new StackPanel();
+        panel.Children.Add(_agendaDay);
+        FillDay(_agendaDay, selected, now);
+        return panel;
+    }
+
+    private static FrameworkElement DateBlock(DateTime day)
+    {
+        var date = new StackPanel { Orientation = Orientation.Horizontal };
+        date.Children.Add(Text(day.Day.ToString(), 30, Primary, Display, FontWeights.SemiBold, TextTrimming.None));
+        var dateText = new StackPanel { Margin = new Thickness(8, 4, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        dateText.Children.Add(Text(Capitalize(day.ToString("dddd")), 12, Primary, Ui, FontWeights.SemiBold, TextTrimming.None));
+        dateText.Children.Add(Text(day.ToString("M"), 11, Secondary, Ui, trimming: TextTrimming.None));
+        date.Children.Add(dateText);
+        return date;
+    }
+
+    private void FillDay(StackPanel host, DateTime selected, DateTime now)
+    {
+        host.Children.Clear();
         switch (_calendar.Access)
         {
             case CalendarAccess.NotConfigured:
-                panel.Children.Add(AccessCard("", "Show your iCloud events here?", "Connect", OpenCalendarSetup));
+                host.Children.Add(AccessCard("", "Show your iCloud events here?", "Connect", OpenCalendarSetup));
                 break;
             case CalendarAccess.Connecting when _calendar.Events.Count == 0:
-                panel.Children.Add(EmptyState("Loading calendar…"));
+                host.Children.Add(EmptyState("Loading calendar…"));
                 break;
             case CalendarAccess.Failed when _calendar.Events.Count == 0:
-                panel.Children.Add(AccessCard("", _calendar.LastError ?? "Calendar unavailable.", "Fix", OpenCalendarSetup));
+                host.Children.Add(AccessCard("", _calendar.LastError ?? "Calendar unavailable.", "Fix", OpenCalendarSetup));
                 break;
             default:
-                DayContent(panel, selected, now);
+                DayContent(host, selected, now);
                 break;
         }
-        return panel;
+    }
+
+    /// Hovering the week strip: swap the date and that day's events in place and slide the
+    /// highlight. Rebuilding the panel here pulled the strip from under the pointer, whose
+    /// MouseLeave reset the day, which rebuilt again — the endless flicker.
+    private void SelectDay(DateTime day)
+    {
+        var today = DateTime.Today;
+        var next = day == today ? (DateTime?)null : day;
+        if (_hoverDay == next || _agendaDay is null || _agendaDate is null) return;
+        _hoverDay = next;
+        _signature = Signature();
+        var now = DateTime.Now;
+        _agendaDate.Content = DateBlock(day);
+        FillDay(_agendaDay, day, now);
+        if (SystemParameters.ClientAreaAnimation)
+        {
+            _agendaDay.BeginAnimation(OpacityProperty, new DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(160))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            });
+        }
+        MoveHighlight(day);
+        ResizeExpanded();
+    }
+
+    private void ResizeExpanded()
+    {
+        if (!_expanded || _expandedView is null) return;
+        _expandedView.Measure(new Size(ExpandedWidth, double.PositiveInfinity));
+        var height = Math.Min(MaxExpandedHeight, Math.Ceiling(_expandedView.DesiredSize.Height));
+        AnimateIsland(ExpandedWidth, height, animate: SystemParameters.ClientAreaAnimation, transition: false);
     }
 
     private void DayContent(StackPanel panel, DateTime selected, DateTime now)
@@ -1249,53 +1362,91 @@ public partial class MainWindow : Window
             panel.Children.Add(EmptyState(isToday && all.Count > 0 ? "All done for today" : "Nothing scheduled"));
     }
 
-    private FrameworkElement WeekStrip(DateTime selected, DateTime today)
+    private const double DayCellWidth = 30;
+    private const double DayCellGap = 2;
+
+    private FrameworkElement WeekStrip(DateTime selected, DateTime today, int generation)
     {
         var strip = new Border { CornerRadius = new CornerRadius(11), Background = Fill, Padding = new Thickness(2) };
+        var layers = new Grid();
+        _dayHighlightShift = new TranslateTransform(DayIndex(selected) * (DayCellWidth + DayCellGap), 0);
+        layers.Children.Add(new Border
+        {
+            Width = DayCellWidth,
+            Height = 42,
+            CornerRadius = new CornerRadius(9),
+            Background = White(0.9),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            RenderTransform = _dayHighlightShift
+        });
         var row = new StackPanel { Orientation = Orientation.Horizontal };
+        _dayCells.Clear();
         for (var i = 0; i < CalendarService.DaysAhead; i++)
         {
             var day = today.AddDays(i);
-            var isSelected = day == selected.Date;
             var isToday = day == today;
-            var cell = new Border
-            {
-                Width = 30,
-                Height = 42,
-                CornerRadius = new CornerRadius(9),
-                Margin = new Thickness(i == 0 ? 0 : 2, 0, 0, 0),
-                Background = isSelected ? White(0.9) : System.Windows.Media.Brushes.Transparent
-            };
+            var weekday = Center(Text(day.ToString("ddd")[..2].ToUpperInvariant(), 8.5, Tertiary, Ui, FontWeights.SemiBold, TextTrimming.None));
+            var number = Center(Text(day.Day.ToString(), 12, isToday ? Primary : Secondary, Display,
+                isToday ? FontWeights.Bold : FontWeights.Medium, TextTrimming.None));
             var content = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
-            content.Children.Add(Center(Text(day.ToString("ddd")[..2].ToUpperInvariant(), 8.5,
-                isSelected ? Brush(Rgb(0, 0, 0, 0.55)) : Tertiary, Ui, FontWeights.SemiBold, TextTrimming.None)));
-            content.Children.Add(Center(Text(day.Day.ToString(), 12,
-                isSelected ? Black : isToday ? Primary : Secondary, Display, isToday ? FontWeights.Bold : FontWeights.Medium, TextTrimming.None)));
+            content.Children.Add(weekday);
+            content.Children.Add(number);
             var dots = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Height = 5, Margin = new Thickness(0, 2, 0, 0) };
             if (_calendar.Access == CalendarAccess.Granted)
                 foreach (var e in _calendar.EventsOn(day).Take(3))
                     dots.Children.Add(new Ellipse { Width = 3.5, Height = 3.5, Fill = Brush(e.Color), Margin = new Thickness(1, 0, 1, 0) });
             content.Children.Add(dots);
-            cell.Child = content;
-            var captured = day;
-            cell.MouseEnter += (_, _) =>
+            var cell = new Border
             {
-                if (_hoverDay == captured || (captured == today && _hoverDay is null)) return;
-                _hoverDay = captured == today ? null : captured;
-                Render(animate: true);
+                Width = DayCellWidth,
+                Height = 42,
+                Margin = new Thickness(i == 0 ? 0 : DayCellGap, 0, 0, 0),
+                Background = System.Windows.Media.Brushes.Transparent,
+                Child = content
             };
+            var captured = day;
+            cell.MouseEnter += (_, _) => { if (generation == _agendaGeneration) SelectDay(captured); };
+            _dayCells.Add((day, weekday, number));
             row.Children.Add(cell);
         }
-        strip.Child = row;
-        strip.MouseLeave += (_, _) =>
-        {
-            if (_hoverDay is null) return;
-            _hoverDay = null;
-            Render(animate: true);
-        };
+        layers.Children.Add(row);
+        strip.Child = layers;
+        // Leaving the strip snaps back to today, as on macOS. A strip that was replaced
+        // by a redraw also gets MouseLeave — the generation check ignores that one.
+        strip.MouseLeave += (_, _) => { if (generation == _agendaGeneration && strip.IsLoaded) SelectDay(today); };
+        StyleDayCells(selected);
         return strip;
     }
 
+    private static int DayIndex(DateTime day) => Math.Clamp((int)(day.Date - DateTime.Today).TotalDays, 0, CalendarService.DaysAhead - 1);
+
+    private void MoveHighlight(DateTime day)
+    {
+        if (_dayHighlightShift is null) return;
+        var x = DayIndex(day) * (DayCellWidth + DayCellGap);
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            _dayHighlightShift.X = x;
+        }
+        else
+        {
+            var slide = new DoubleAnimation(x, SpringDuration(0.28)) { EasingFunction = new SpringEase { Response = 0.28, Damping = 0.82 } };
+            Timeline.SetDesiredFrameRate(slide, 120);
+            _dayHighlightShift.BeginAnimation(TranslateTransform.XProperty, slide);
+        }
+        StyleDayCells(day);
+    }
+
+    private void StyleDayCells(DateTime selected)
+    {
+        foreach (var (day, weekday, number) in _dayCells)
+        {
+            var isSelected = day == selected.Date;
+            var isToday = day == DateTime.Today;
+            weekday.Foreground = isSelected ? Brush(Rgb(0, 0, 0, 0.55)) : Tertiary;
+            number.Foreground = isSelected ? Black : isToday ? Primary : Secondary;
+        }
+    }
     private FrameworkElement HeroCard(AgendaEvent e, DateTime now)
     {
         var tint = e.Color;
