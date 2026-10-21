@@ -12,6 +12,38 @@ if (command == "status")
     return 0;
 }
 
+if (command is "install" or "uninstall")
+{
+    // install "<tool display name>" --bridge <path-to-CodeIsland.Bridge.exe>
+    var name = args.ElementAtOrDefault(1);
+    var tool = KnownTools.All.SingleOrDefault(value => string.Equals(value.DisplayName, name, StringComparison.OrdinalIgnoreCase));
+    if (tool is null)
+    {
+        Console.Error.WriteLine($"Unknown tool. Known: {string.Join(", ", KnownTools.All.Select(value => value.DisplayName))}");
+        return 2;
+    }
+
+    var store = new HookFileStore();
+    var manager = new HookManager(new ToolDetector(store: store), store);
+    if (command == "uninstall")
+    {
+        Console.WriteLine($"hook={manager.Uninstall(tool).HookInstalled}");
+        return 0;
+    }
+
+    var bridgeIndex = Array.IndexOf(args, "--bridge");
+    var bridgePath = bridgeIndex >= 0 ? args.ElementAtOrDefault(bridgeIndex + 1) : null;
+    if (bridgePath is null || !File.Exists(bridgePath))
+    {
+        Console.Error.WriteLine("--bridge must point to an existing CodeIsland.Bridge.exe");
+        return 2;
+    }
+
+    var result = manager.Install(tool, Path.GetFullPath(bridgePath));
+    Console.WriteLine($"config={result.ConfigPath} hook={result.HookInstalled} healthy={result.IsHealthy}");
+    return result.IsHealthy ? 0 : 1;
+}
+
 if (command == "self-test")
 {
     var root = Path.Combine(Path.GetTempPath(), $"codeisland-hooks-{Guid.NewGuid():N}");
