@@ -64,6 +64,8 @@ public partial class MainWindow : Window
     private DateTimeOffset? _leftAt;
     private bool _renderQueued;
     private bool _modalOpen;
+    private bool? _renderedExpanded;
+    private string? _signature;
 
     public string HotKeyStatus => _hotKeys?.RegistrationSummary ?? "Shortcuts are not registered yet.";
     public IntPtr NativeHandle => new WindowInteropHelper(this).Handle;
@@ -336,17 +338,40 @@ public partial class MainWindow : Window
         });
     }
 
+    /// Everything the island draws, as text: a redraw that would look the same is skipped,
+    /// so a stream of tool events does not rebuild (and re-layout) the panel for nothing.
+    private string Signature()
+    {
+        var b = new System.Text.StringBuilder();
+        b.Append(_expanded).Append('|').Append(_tab).Append('|').Append(_agendaInList).Append('|')
+            .Append(_hoverDay?.ToString("yyyyMMdd")).Append('|').Append(DateTime.Now.ToString("yyyyMMddHHmm")).Append('|')
+            .Append(_settings.SoundEnabled).Append('|').Append(_quota.State).Append('|');
+        if (_quota.Snapshot is { } q)
+            foreach (var l in q.Limits) b.Append(l.Kind).Append(Math.Round(l.Percent)).Append(l.Severity).Append(';');
+        b.Append('|').Append(_calendar.Access).Append(_calendar.Events.Count).Append(_calendar.LastError).Append('|');
+        foreach (var e in _calendar.Events) b.Append(e.Id).Append(e.Title).Append(';');
+        foreach (var s in _tracker.Sessions)
+            b.Append('\n').Append(s.SessionId).Append(s.Status).Append(s.Tool).Append(s.ToolDetail).Append(s.Prompt)
+                .Append(s.Reply).Append(s.PendingEventId).Append(s.PendingTool).Append(s.PendingDetail)
+                .Append(s.Subagents).Append(s.Host).Append(s.Branch).Append(s.Agent);
+        return b.ToString();
+    }
+
     private void Render(bool animate)
     {
+        var transition = _renderedExpanded != _expanded;
+        var signature = Signature();
+        if (!transition && signature == _signature && _content.Children.Count > 0) return;
+        _signature = signature;
+        animate &= SystemParameters.ClientAreaAnimation;
+
         var collapsed = BuildCollapsed();
         // A steady width, like the notch: the bar must not twitch with every tool call.
         collapsed.Measure(new Size(double.PositiveInfinity, CollapsedHeight));
         var minimum = _tracker.TotalCount > 0 ? 440 : _quota.Snapshot is not null ? 340 : 280;
         var collapsedWidth = Math.Clamp(Math.Ceiling(collapsed.DesiredSize.Width), minimum, 470);
 
-        _content.Children.Clear();
-        _collapsedView = collapsed;
-        _expandedView = null;
+        FrameworkElement view;
         double targetWidth, targetHeight;
         if (_expanded)
         {
@@ -356,55 +381,145 @@ public partial class MainWindow : Window
             targetWidth = ExpandedWidth;
             targetHeight = Math.Min(MaxExpandedHeight, Math.Ceiling(expanded.DesiredSize.Height));
             expanded.MaxHeight = MaxExpandedHeight;
-            _expandedView = expanded;
-            _content.Children.Add(expanded);
-            if (animate) FadeIn(expanded, 0.05);
+            view = expanded;
         }
         else
         {
             collapsed.Width = collapsedWidth;
             targetWidth = collapsedWidth;
             targetHeight = CollapsedHeight;
-            _content.Children.Add(collapsed);
-            if (animate) FadeIn(collapsed, 0.08);
+            view = collapsed;
         }
-        AnimateIsland(targetWidth, targetHeight, animate);
+        view.VerticalAlignment = VerticalAlignment.Top;
+
+        if (transition && animate)
+        {
+            // Crossfade: the old face fades out fast while the island morphs, the new one
+            // settles in once there is room for it (the macOS open/close choreography).
+            foreach (var old in _content.Children.OfType<FrameworkElement>().ToArray())
+                FadeOutAndRemove(old, _expanded ? 90 : 110);
+            _content.Children.Add(view);
+            if (_expanded) Enter(view, delay: 0.07, slide: -8, duration: 260);
+            else Enter(view, delay: 0.16, slide: 0, duration: 180);
+        }
+        else
+        {
+            // Same face, new data: swap in place, no flash.
+            _content.Children.Clear();
+            _content.Children.Add(view);
+        }
+        _collapsedView = collapsed;
+        _expandedView = _expanded ? view : null;
+        _renderedExpanded = _expanded;
+        AnimateIsland(targetWidth, targetHeight, animate, transition);
     }
 
-    private void AnimateIsland(double width, double height, bool animate)
+    private void AnimateIsland(double width, double height, bool animate, bool transition)
     {
-        var sameSize = Math.Abs(_island.Width - width) < 0.5 && Math.Abs(_island.Height - height) < 0.5;
-        if (!animate || !SystemParameters.ClientAreaAnimation)
+        // ActualWidth/Height include a running animation, so a new one picks up mid-flight.
+        var fromWidth = _island.ActualWidth > 0 ? _island.ActualWidth : _island.Width;
+        var fromHeight = _island.ActualHeight > 0 ? _island.ActualHeight : _island.Height;
+        if (!animate || (Math.Abs(fromWidth - width) < 0.5 && Math.Abs(fromHeight - height) < 0.5))
         {
             _island.BeginAnimation(WidthProperty, null);
             _island.BeginAnimation(HeightProperty, null);
             _island.Width = width;
             _island.Height = height;
+            FitWindow(width, height);
             return;
         }
-        if (sameSize && !_island.HasAnimatedProperties) return;
-        var opening = height > _island.ActualHeight + 1;
-        var ease = opening ? new SpringEase { Response = 0.45, Damping = 0.8 } : new SpringEase { Response = 0.32, Damping = 0.92 };
+        // Grow the window first; it shrinks back once the island settles.
+        FitWindow(Math.Max(fromWidth, width) * 1.03, Math.Max(fromHeight, height) * 1.03 + 6);
+        var opening = height > fromHeight + 1;
+        // Open: lively spring. Close: firmer, no bounce. Content resizes: short and calm.
+        var ease = !transition ? new SpringEase { Response = 0.3, Damping = 0.95 }
+            : opening ? new SpringEase { Response = 0.45, Damping = 0.8 }
+            : new SpringEase { Response = 0.36, Damping = 1 };
         var duration = SpringDuration(ease.Response);
-        var wa = new DoubleAnimation(width, duration) { EasingFunction = ease };
-        var ha = new DoubleAnimation(height, duration) { EasingFunction = ease };
-        wa.Completed += (_, _) => { _island.BeginAnimation(WidthProperty, null); _island.Width = width; };
-        ha.Completed += (_, _) => { _island.BeginAnimation(HeightProperty, null); _island.Height = height; };
         _island.Width = width;
         _island.Height = height;
-        _island.BeginAnimation(WidthProperty, wa, HandoffBehavior.SnapshotAndReplace);
-        _island.BeginAnimation(HeightProperty, ha, HandoffBehavior.SnapshotAndReplace);
+        _island.BeginAnimation(WidthProperty, Morph(fromWidth, width, duration, ease, WidthProperty));
+        _island.BeginAnimation(HeightProperty, Morph(fromHeight, height, duration, ease, HeightProperty));
     }
 
-    private static void FadeIn(UIElement element, double delay)
+    /// A layered window costs a GPU read-back of its whole surface per frame, so the window
+    /// is kept just larger than the island (plus shoulders) instead of a fixed big canvas.
+    private void FitWindow(double islandWidth, double islandHeight)
     {
-        if (!SystemParameters.ClientAreaAnimation) return;
+        var width = Math.Ceiling(islandWidth + 2 * ShoulderSize + 8);
+        var height = Math.Ceiling(islandHeight + 4);
+        if (Math.Abs(Width - width) < 1 && Math.Abs(Height - height) < 1) return;
+        var center = Left + Width / 2;
+        Width = width;
+        Height = height;
+        Left = center - width / 2;
+    }
+
+    private DoubleAnimation Morph(double from, double to, Duration duration, IEasingFunction ease, DependencyProperty property)
+    {
+        var animation = new DoubleAnimation(from, to, duration) { EasingFunction = ease, FillBehavior = FillBehavior.Stop };
+        Timeline.SetDesiredFrameRate(animation, 120);
+        animation.Completed += (_, _) =>
+        {
+            // Only clear if no newer animation replaced this one.
+            if (property == WidthProperty ? Math.Abs(_island.Width - to) < 0.5 : Math.Abs(_island.Height - to) < 0.5)
+            {
+                _island.BeginAnimation(property, null);
+                if (property == HeightProperty) FitWindow(_island.Width, _island.Height);
+            }
+        };
+        return animation;
+    }
+
+    private static void Enter(FrameworkElement element, double delay, double slide, double duration)
+    {
         element.Opacity = 0;
-        element.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180))
+        Cache(element, true);
+        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(duration))
         {
             BeginTime = TimeSpan.FromSeconds(delay),
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        });
+        };
+        Timeline.SetDesiredFrameRate(fade, 120);
+        fade.Completed += (_, _) => Cache(element, false);
+        element.BeginAnimation(OpacityProperty, fade);
+        if (slide == 0) return;
+        var shift = new TranslateTransform(0, slide);
+        element.RenderTransform = shift;
+        var move = new DoubleAnimation(slide, 0, SpringDuration(0.42))
+        {
+            BeginTime = TimeSpan.FromSeconds(delay),
+            EasingFunction = new SpringEase { Response = 0.42, Damping = 0.82 }
+        };
+        Timeline.SetDesiredFrameRate(move, 120);
+        shift.BeginAnimation(TranslateTransform.YProperty, move);
+    }
+
+    /// While a face fades or slides, draw it from a bitmap: opacity and the moving clip
+    /// then cost a texture blit per frame instead of re-rendering every text run.
+    private static void Cache(FrameworkElement element, bool on)
+    {
+        if (!on)
+        {
+            element.CacheMode = null;
+            return;
+        }
+        var dpi = VisualTreeHelper.GetDpi(element);
+        element.CacheMode = new BitmapCache(Math.Max(1, dpi.DpiScaleX)) { SnapsToDevicePixels = true };
+    }
+
+    private void FadeOutAndRemove(FrameworkElement element, double milliseconds)
+    {
+        element.Tag = "leaving";
+        element.IsHitTestVisible = false;
+        Cache(element, true);
+        var fade = new DoubleAnimation(element.Opacity, 0, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        };
+        Timeline.SetDesiredFrameRate(fade, 120);
+        fade.Completed += (_, _) => _content.Children.Remove(element);
+        element.BeginAnimation(OpacityProperty, fade);
     }
 
     // MARK: - Collapsed bar
@@ -692,8 +807,7 @@ public partial class MainWindow : Window
             ToolTip = tooltip,
             Child = new Grid { Children = { Center(Icon(glyph, 13, brush)) } }
         };
-        button.MouseEnter += (_, _) => button.Background = White(0.16);
-        button.MouseLeave += (_, _) => button.Background = White(0.08);
+        HoverFill(button, 0.08, 0.16);
         button.MouseLeftButtonUp += (_, e) =>
         {
             action();
@@ -804,8 +918,7 @@ public partial class MainWindow : Window
         };
         card.Loaded += (_, _) => card.Clip = new RectangleGeometry(new Rect(0, 0, card.ActualWidth, card.ActualHeight), 10, 10);
         card.SizeChanged += (_, _) => card.Clip = new RectangleGeometry(new Rect(0, 0, card.ActualWidth, card.ActualHeight), 10, 10);
-        card.MouseEnter += (_, _) => card.Background = White(0.10);
-        card.MouseLeave += (_, _) => card.Background = White(0.05);
+        HoverFill(card, 0.05, 0.10);
         card.MouseLeftButtonUp += (_, e) =>
         {
             if (e.Handled) return;
@@ -1244,8 +1357,7 @@ public partial class MainWindow : Window
             Child = grid,
             ToolTip = e.CalendarTitle
         };
-        row.MouseEnter += (_, _) => row.Background = FillStrong;
-        row.MouseLeave += (_, _) => row.Background = Fill;
+        HoverFill(row, 0.06, 0.10);
         return row;
     }
 
@@ -1416,6 +1528,16 @@ public partial class MainWindow : Window
         _ => Rgb(1, 1, 1, 0.18)
     };
 
+    /// The macOS "micro" hover: a 0.12 s ease-out between two white fills.
+    private static void HoverFill(Border border, double rest, double hover)
+    {
+        var brush = new SolidColorBrush(Rgb(1, 1, 1, rest));
+        border.Background = brush;
+        void To(double opacity) => brush.BeginAnimation(SolidColorBrush.ColorProperty,
+            new ColorAnimation(Rgb(1, 1, 1, opacity), TimeSpan.FromMilliseconds(120)) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } });
+        border.MouseEnter += (_, _) => To(hover);
+        border.MouseLeave += (_, _) => To(rest);
+    }
     private static void Pulse(UIElement element)
     {
         if (!SystemParameters.ClientAreaAnimation) return;
