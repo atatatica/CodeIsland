@@ -435,8 +435,9 @@ public partial class MainWindow : Window
         var collapsed = BuildCollapsed();
         // A steady width, like the notch: the bar must not twitch with every tool call.
         collapsed.Measure(new Size(double.PositiveInfinity, CollapsedHeight));
-        var minimum = _tracker.TotalCount > 0 ? 440 : _quota.Snapshot is not null ? 340 : 280;
-        var collapsedWidth = Math.Clamp(Math.Ceiling(collapsed.DesiredSize.Width), minimum, 470);
+        // Fixed per state, never from the text: a width that followed the tool line made the
+        // bar breathe left and right on every event. The centre text trims instead.
+        var collapsedWidth = _tracker.TotalCount > 0 ? 470.0 : 380.0;
 
         FrameworkElement view;
         double targetWidth, targetHeight;
@@ -531,13 +532,11 @@ public partial class MainWindow : Window
     /// is kept just larger than the island (plus shoulders) instead of a fixed big canvas.
     private void FitWindow(double islandWidth, double islandHeight)
     {
-        var width = Math.Ceiling(islandWidth + 2 * ShoulderSize + 8);
+        // Only the height follows the island: the width (and so Left) stays put, because
+        // re-centring a resized window shifted the island by a pixel back and forth.
         var height = Math.Ceiling(islandHeight + 4);
-        if (Math.Abs(Width - width) < 1 && Math.Abs(Height - height) < 1) return;
-        var center = Left + Width / 2;
-        Width = width;
+        if (Math.Abs(Height - height) < 1) return;
         Height = height;
-        Left = center - width / 2;
     }
 
     private DoubleAnimation Morph(double from, double to, Duration duration, IEasingFunction ease, DependencyProperty property)
@@ -1335,6 +1334,11 @@ public partial class MainWindow : Window
     private void ResizeExpanded()
     {
         if (!_expanded || _expandedView is null) return;
+        // InvalidateMeasure marks only the changed element; without walking up, Measure on the
+        // panel returned its cached height — the previous day's (a gap, or a cut-off list).
+        for (DependencyObject? e = _agendaDay; e is not null && !ReferenceEquals(e, _content); e = VisualTreeHelper.GetParent(e))
+            if (e is UIElement u) u.InvalidateMeasure();
+        _expandedView.UpdateLayout();
         _expandedView.Measure(new Size(ExpandedWidth, double.PositiveInfinity));
         var height = Math.Min(MaxExpandedHeight, Math.Ceiling(_expandedView.DesiredSize.Height));
         AnimateIsland(ExpandedWidth, height, animate: SystemParameters.ClientAreaAnimation, transition: false);
