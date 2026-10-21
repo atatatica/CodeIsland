@@ -52,7 +52,7 @@ public partial class MainWindow : Window
     private HwndSource? _source;
 
     private Border _island = null!;
-    private Grid _content = null!;
+    private Canvas _content = null!;
     private FrameworkElement? _collapsedView;
     private FrameworkElement? _expandedView;
     private bool _expanded;
@@ -267,8 +267,11 @@ public partial class MainWindow : Window
             Cursor = Cursors.Arrow
         };
         _island.SizeChanged += (_, _) => UpdateClip();
-        _content = new Grid { VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Center };
+        // A Canvas measures its children with infinite room, so a face is measured once and only
+        // slides while the island morphs; a Grid would re-measure every text run each frame.
+        _content = new Canvas { ClipToBounds = false };
         _island.Child = _content;
+        _island.SizeChanged += (_, _) => CenterFaces();
         _island.MouseLeftButtonUp += (_, e) =>
         {
             if (!_expanded)
@@ -398,7 +401,7 @@ public partial class MainWindow : Window
             // settles in once there is room for it (the macOS open/close choreography).
             foreach (var old in _content.Children.OfType<FrameworkElement>().ToArray())
                 FadeOutAndRemove(old, _expanded ? 90 : 110);
-            _content.Children.Add(view);
+            AddFace(view);
             if (_expanded) Enter(view, delay: 0.07, slide: -8, duration: 260);
             else Enter(view, delay: 0.16, slide: 0, duration: 180);
         }
@@ -406,12 +409,30 @@ public partial class MainWindow : Window
         {
             // Same face, new data: swap in place, no flash.
             _content.Children.Clear();
-            _content.Children.Add(view);
+            AddFace(view);
         }
         _collapsedView = collapsed;
         _expandedView = _expanded ? view : null;
         _renderedExpanded = _expanded;
         AnimateIsland(targetWidth, targetHeight, animate, transition);
+    }
+
+    private void AddFace(FrameworkElement face)
+    {
+        _content.Children.Add(face);
+        CenterFace(face);
+    }
+
+    private void CenterFaces()
+    {
+        foreach (var face in _content.Children.OfType<FrameworkElement>()) CenterFace(face);
+    }
+
+    private void CenterFace(FrameworkElement face)
+    {
+        var width = double.IsNaN(face.Width) ? face.DesiredSize.Width : face.Width;
+        Canvas.SetLeft(face, Math.Round((_island.ActualWidth - width) / 2));
+        Canvas.SetTop(face, 0);
     }
 
     private void AnimateIsland(double width, double height, bool animate, bool transition)
@@ -475,11 +496,13 @@ public partial class MainWindow : Window
     {
         element.Opacity = 0;
         Cache(element, true);
-        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(duration))
-        {
-            BeginTime = TimeSpan.FromSeconds(delay),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
+        // A barely visible first frame makes WPF build the bitmap cache right away, while the
+        // island is still small and slow, instead of mid-flight where it would stall a frame.
+        var fade = new DoubleAnimationUsingKeyFrames();
+        fade.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.01, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+        fade.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.01, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(delay))));
+        fade.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(delay) + TimeSpan.FromMilliseconds(duration)),
+            new CubicEase { EasingMode = EasingMode.EaseOut }));
         Timeline.SetDesiredFrameRate(fade, 120);
         fade.Completed += (_, _) => Cache(element, false);
         element.BeginAnimation(OpacityProperty, fade);
