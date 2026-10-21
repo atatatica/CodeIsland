@@ -19,7 +19,11 @@ else if (mode == "send" && args.Length >= 2)
     var eventName = GetOption(args, "--event");
     var userSid = GetOption(args, "--user-sid");
     var file = stdin ? null : args.Skip(1).FirstOrDefault(value => !value.StartsWith("--", StringComparison.Ordinal));
-    var input = stdin ? await Console.In.ReadToEndAsync() : await File.ReadAllTextAsync(file
+    // Agents write UTF-8 JSON; Console.In would decode it with the OEM code page (CP866 on a
+    // Russian system) and turn every non-ASCII prompt and reply into box-drawing garbage.
+    var input = stdin
+        ? await new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false)).ReadToEndAsync()
+        : await File.ReadAllTextAsync(file
         ?? throw new ArgumentException("send requires --stdin or an event JSON file."));
     var agentEvent = ParseEvent(input, source, eventName);
     if (agentEvent.ProcessId is null) agentEvent = agentEvent with { ProcessId = ParentProcess.Id() };

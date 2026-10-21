@@ -87,7 +87,8 @@ public sealed class CalendarSetupWindow : Window
         };
         MouseLeftButtonDown += (_, e) =>
         {
-            if (e.OriginalSource is not TextBox and not PasswordBox) DragMove();
+            // DragMove captures the mouse, so a button under the pointer would never see its click.
+            if (!IsInteractive(e.OriginalSource as DependencyObject)) DragMove();
         };
         KeyDown += (_, e) =>
         {
@@ -122,6 +123,14 @@ public sealed class CalendarSetupWindow : Window
         }
         _status.Text = error;
         _status.Foreground = Brush(Deny);
+    }
+
+    private static bool IsInteractive(DependencyObject? element)
+    {
+        for (; element is not null; element = element is Visual ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element))
+            if (element is TextBox or PasswordBox || element is FrameworkElement { Cursor: not null } fe && fe.Cursor == Cursors.Hand)
+                return true;
+        return false;
     }
 
     private static TextBlock Label(string text)
