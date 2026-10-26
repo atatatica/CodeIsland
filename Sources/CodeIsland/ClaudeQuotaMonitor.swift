@@ -10,6 +10,8 @@ import Foundation
 final class ClaudeQuotaMonitor {
     private(set) var snapshot: ClaudeQuotaSnapshot?
     private(set) var lastError: ClaudeQuotaClientError?
+    /// The Claude Code login is gone or rejected: cached numbers can't refresh.
+    var needsLogin: Bool { lastError == .unauthorized || lastError == .noCredential }
     private(set) var scheduler: ClaudeQuotaScheduler
     private(set) var isExpanded = false
 

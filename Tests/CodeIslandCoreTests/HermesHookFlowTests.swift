@@ -39,6 +39,28 @@ final class HermesHookFlowTests: XCTestCase {
         ]
     }
 
+    /// After a reply Hermes runs a background review in the same session id.
+    /// Its tool hooks come without any turn hooks, so they must not wake the
+    /// settled card; the next pre_llm_call starts a real turn again.
+    func testBackgroundReviewToolsDoNotReviveSettledCard() throws {
+        var sessions: [String: SessionSnapshot] = [:]
+        try send("pre_llm_call", ["user_message": "hi", "platform": "desktop"], to: &sessions)
+        try send("on_session_end", turnEnd(platform: "desktop"), to: &sessions)
+        XCTAssertEqual(sessions[sessionId]?.status, .idle)
+
+        try send("pre_tool_call", ["task_id": "review", "tool_call_id": "r1"],
+                 top: ["tool_name": "skill_manage"], to: &sessions)
+        try send("post_tool_call", ["task_id": "review", "tool_call_id": "r1", "status": "ok"],
+                 top: ["tool_name": "skill_manage"], to: &sessions)
+        XCTAssertEqual(sessions[sessionId]?.status, .idle)
+        XCTAssertNil(sessions[sessionId]?.currentTool)
+
+        try send("pre_llm_call", ["user_message": "next", "platform": "desktop"], to: &sessions)
+        try send("pre_tool_call", ["task_id": "t2", "tool_call_id": "c2"],
+                 top: ["tool_name": "read_file"], to: &sessions)
+        XCTAssertEqual(sessions[sessionId]?.status, .running)
+    }
+
     func testEventNamesFollowHermesTurnTiming() {
         XCTAssertEqual(EventNormalizer.normalize("pre_llm_call"), "UserPromptSubmit")
         XCTAssertEqual(EventNormalizer.normalize("post_llm_call"), "AgentTurnSettled")

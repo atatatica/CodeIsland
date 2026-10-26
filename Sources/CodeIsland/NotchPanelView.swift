@@ -160,6 +160,9 @@ struct NotchPanelView: View {
     @State private var quotaChipWidth: CGFloat = 0
     /// Measured width of the collapsed right wing (0 until first laid out).
     @State private var rightWingWidth: CGFloat = 0
+    /// Measured width of the left OpenRouter chip (Hermes on the bar).
+    @State private var openRouterChipWidth: CGFloat = 0
+    @State private var codexChipWidth: CGFloat = 0
 
     private var isActive: Bool { !appState.sessions.isEmpty }
     /// First launch / no-session state should still render a visible marker so the app
@@ -177,12 +180,6 @@ struct NotchPanelView: View {
     /// The idle island's hover panel: today's agenda instead of an empty bar.
     private var showAgenda: Bool {
         showIdleIndicator && agendaOpen && showCalendar
-    }
-    /// Room the hovered idle bar adds for the usage rings (vs the old "0").
-    private var idleUsageExtra: CGFloat {
-        guard RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows),
-              let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty else { return 0 }
-        return 70
     }
     /// Either expanded look — the session surfaces or the idle agenda.
     private var isOpenLook: Bool { shouldShowExpanded || showAgenda }
@@ -216,11 +213,15 @@ struct NotchPanelView: View {
         )
     }
 
+    /// Text gets its final width once. The outer shell reveals/clips it during
+    /// its spring instead of reflowing every card at every intermediate width.
+    private var expandedContentWidth: CGFloat { min(max(effectiveNotchW + 200, 580), maxPanelWidth) }
+
     /// Total panel width — adapts based on state and screen geometry
     private var panelWidth: CGFloat {
         let nw = effectiveNotchW
         if showAgenda { return min(max(nw + 200, 580), maxPanelWidth) }
-        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 + idleUsageExtra : nw + compactWingWidth * 2 }
+        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
         if !isActive { return hasNotch ? nw - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxPanelWidth) }
         // On a notch both wings get the larger reserve, so the bar stays centred on it.
@@ -260,11 +261,18 @@ struct NotchPanelView: View {
     /// Room for the plan-limit chip in the collapsed bar; `.none` whenever the
     /// chip isn't shown, which leaves the bar exactly as it is without it.
     private var quotaReserve: QuotaChipLayout.Reserve {
-        guard showBar, !shouldShowExpanded,
-              let limit = QuotaChip.limit(appState: appState, enabled: leftQuotaChip, modeRaw: leftChipModeRaw)
-        else { return .none }
-        // Measured once laid out; the label-length estimate covers the first frame.
-        let chipWidth = quotaChipWidth > 0 ? quotaChipWidth : QuotaChip.estimatedWidth(for: limit)
+        guard showBar, !shouldShowExpanded else { return .none }
+        let chipWidth: CGFloat
+        if appState.hermesOnBar {
+            chipWidth = openRouterChipWidth > 0 ? openRouterChipWidth : OpenRouterChip.estimatedWidth
+        } else if appState.codexOnBar {
+            chipWidth = codexChipWidth > 0 ? codexChipWidth : 66
+        } else if let limit = QuotaChip.limit(appState: appState, enabled: leftQuotaChip, modeRaw: leftChipModeRaw) {
+            // Measured once laid out; the label-length estimate covers the first frame.
+            chipWidth = quotaChipWidth > 0 ? quotaChipWidth : QuotaChip.estimatedWidth(for: limit)
+        } else {
+            return .none
+        }
         return QuotaChipLayout.reserve(
             chipWidth: chipWidth,
             mascotSize: mascotSize,
@@ -313,6 +321,8 @@ struct NotchPanelView: View {
                     // 0 means the chip isn't drawn right now (a tool name holds
                     // the slot) — keep the last width so the bar doesn't twitch.
                     .onPreferenceChange(QuotaChipWidthKey.self) { if $0 > 0 { quotaChipWidth = $0 } }
+                    .onPreferenceChange(OpenRouterChipWidthKey.self) { if $0 > 0 { openRouterChipWidth = $0 } }
+                    .onPreferenceChange(CodexChipWidthKey.self) { if $0 > 0 { codexChipWidth = $0 } }
                     // 0 while expanded (only the collapsed wing reports) — keep
                     // the last width for the next collapse.
                     .onPreferenceChange(CompactRightWingWidthKey.self) { if $0 > 0 { rightWingWidth = $0 } }
@@ -420,14 +430,18 @@ struct NotchPanelView: View {
                         }
                     case .completionCard:
                         SessionListView(appState: appState, onlySessionId: appState.justCompletedSessionId)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                            .frame(width: expandedContentWidth)
+                            .geometryGroup()
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     case .sessionList:
                         if showCalendar && CalendarStore.shared.agendaInList {
                             AgendaPanel(appState: appState, showClaudeQuota: showClaudeQuota, showUsageStats: showUsageStats)
                                 .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                         } else {
                             SessionListView(appState: appState, onlySessionId: nil)
-                                .transition(.blurFade.combined(with: .move(edge: .top)))
+                                .frame(width: expandedContentWidth)
+                                .geometryGroup()
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     case .collapsed:
                         EmptyView()
@@ -667,7 +681,12 @@ private struct CompactLeftWing: View {
         // Honor user's configured default mascot whenever nothing is actively
         // happening. Covers no-session and all-idle equally (#149) — without
         // this, an idle session's source overrides the user preference.
-        if displayStatus == .idle { return settingsDefaultSource }
+        // Fork: when all is idle keep the mascot of the agent that worked last;
+        // the configured default only covers "no sessions at all".
+        if displayStatus == .idle {
+            let last = appState.barSession?.mascotSource.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return last.isEmpty ? settingsDefaultSource : last
+        }
         // Prefer mascotSource so a Cursor/Codex session with empty hook source
         // still resolves via termBundleId instead of falling through to Clawd.
         if let s = displaySession {
@@ -696,8 +715,20 @@ private struct CompactLeftWing: View {
                     .transition(.opacity)
                     .animation(.easeInOut(duration: 0.3), value: displaySource)
 
-                // On notch screens, show tool name only (no description, space is tight)
-                if hasNotch, showToolStatus, let tool = shownTool {
+                // Hermes on the bar: OpenRouter spend today takes the slot.
+                if appState.hermesOnBar {
+                    OpenRouterChip(monitor: appState.openRouter, kind: .spentToday)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: OpenRouterChipWidthKey.self, value: geo.size.width)
+                        })
+                        .transition(.opacity)
+                } else if appState.codexOnBar {
+                    CodexQuotaChip(monitor: appState.codexQuota, kind: .session)
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: CodexChipWidthKey.self, value: geo.size.width)
+                        })
+                } else if hasNotch, showToolStatus, let tool = shownTool {
+                    // On notch screens, show tool name only (no description, space is tight)
                     Text(ToolNameDisplay.compact(tool))
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(toolStatusColor(tool))
@@ -719,7 +750,8 @@ private struct CompactLeftWing: View {
                         limit: limit,
                         snapshot: snapshot,
                         stale: appState.claudeQuota.lastError != nil,
-                        showsPace: QuotaChip.paceFits(mascotSize: mascotSize)
+                        showsPace: QuotaChip.paceFits(mascotSize: mascotSize),
+                        needsLogin: appState.claudeQuota.needsLogin
                     )
                         .fixedSize()
                         .background(GeometryReader { geo in
@@ -924,10 +956,15 @@ private struct CompactRightWing: View {
                         .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                 }
 
-                if rightWingUsage, let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty {
+                if appState.hermesOnBar {
+                    // Hermes on the bar: OpenRouter balance in place of the count.
+                    OpenRouterChip(monitor: appState.openRouter, kind: .balance)
+                } else if appState.codexOnBar {
+                    CodexQuotaChip(monitor: appState.codexQuota, kind: .weeklyAll)
+                } else if rightWingUsage, let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty {
                     // Plan usage in place of the session count: 5-hour and
                     // weekly windows, each a ring + percent.
-                    RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil, weeklyOnly: true)
+                    RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil, weeklyOnly: true, needsLogin: appState.claudeQuota.needsLogin)
                         .help(sessionCountTooltip)
                 } else {
                     if showToolStatus {
@@ -1380,19 +1417,8 @@ private struct IdleIndicatorBar: View {
             // Right: expanded shows text + buttons, collapsed shows nothing
             if hovered {
                 HStack(spacing: 8) {
-                    // Gives way to the quit pill: the hovered bar is only a
-                    // little wider than its buttons.
-                    if !quit.isArmed {
-                        if RightWingUsage.enabled(showClaudeQuota: showClaudeQuota, modeRaw: rightWingShows),
-                           let snapshot = appState.claudeQuota.snapshot, !snapshot.isEmpty {
-                            RightWingUsage(snapshot: snapshot, stale: appState.claudeQuota.lastError != nil)
-                        } else {
-                            Text("0")
-                                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.5))
-                        }
-                    }
-
+                    // Fork: no sessions, no plan limits up here — they show
+                    // only while agents are on the bar.
                     HStack(spacing: 4) {
                         NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                             soundEnabled.toggle()
@@ -2918,6 +2944,20 @@ enum SessionListMetrics {
     }
 }
 
+private struct SessionListSection: Identifiable {
+    let id: String
+    let header: String
+    let source: String?
+    let ids: [String]
+}
+
+private struct SessionListEntry: Identifiable {
+    let id: String
+    let header: String
+    let source: String?
+    let sessionId: String?
+}
+
 private struct SessionListView: View {
     var appState: AppState
     /// When set, only show this session (auto-expand on completion)
@@ -2948,13 +2988,13 @@ private struct SessionListView: View {
         orderFreeze.apply(appState.sessionListOrder())
     }
 
-    private var groupedSessions: [(header: String, source: String?, ids: [String])] {
+    private var groupedSessions: [SessionListSection] {
         if let only = onlySessionId {
             // A card whose session is gone shows nothing (the AiWork
             // watchers drop sessions without moving the surface). Falling
             // through would render every session as a completion card, and
             // their replies size against each other without settling (#357).
-            return appState.sessions[only] != nil ? [("", nil, [only])] : []
+            return appState.sessions[only] != nil ? [.init(id: "completion", header: "", source: nil, ids: [only])] : []
         }
 
         let sorted = orderedSessionIds
@@ -2968,7 +3008,7 @@ private struct SessionListView: View {
             return SessionListGrouping.byStatus(sorted) { id in
                 freeze.status(of: id, live: sessions[id]?.status)
             }.map { group in
-                ("\(L10n.shared[group.labelKey]) (\(group.ids.count))", nil, group.ids)
+                .init(id: group.labelKey, header: "\(L10n.shared[group.labelKey]) (\(group.ids.count))", source: nil, ids: group.ids)
             }
 
         case "cli":
@@ -3004,7 +3044,7 @@ private struct SessionListView: View {
                 ("aiwork", "AiWork"),
                 ("aiwork-cli", "AiWork CLI"),
             ]
-            var result: [(String, String?, [String])] = []
+            var result: [SessionListSection] = []
             var seen = Set<String>()
             for cli in cliOrder {
                 let ids = sorted.filter { id in
@@ -3017,17 +3057,17 @@ private struct SessionListView: View {
                 }
                 ids.forEach { seen.insert($0) }
                 if !ids.isEmpty {
-                    result.append(("\(cli.name) (\(ids.count))", cli.source, ids))
+                    result.append(.init(id: cli.source, header: "\(cli.name) (\(ids.count))", source: cli.source, ids: ids))
                 }
             }
             let remaining = sorted.filter { !seen.contains($0) }
             if !remaining.isEmpty {
-                result.append(("\(L10n.shared["other"]) (\(remaining.count))", nil, remaining))
+                result.append(.init(id: "other", header: "\(L10n.shared["other"]) (\(remaining.count))", source: nil, ids: remaining))
             }
             return result
 
         default: // "all"
-            return [("", nil, sorted)]
+            return [.init(id: "all", header: "", source: nil, ids: sorted)]
         }
     }
 
@@ -3036,13 +3076,15 @@ private struct SessionListView: View {
         let groups = groupedSessions
         let totalSessionCount = groups.reduce(0) { $0 + $1.ids.count }
         let density = self.density
-        let needsScroll = SessionListMetrics.needsScroll(
-            isCompletionCard: onlySessionId != nil,
-            sessionCount: totalSessionCount,
-            contentHeight: contentHeight,
-            maxVisibleSessions: maxVisibleSessions,
-            density: density
-        )
+        let scrollBudget = SessionListMetrics.scrollHeight(maxVisibleSessions: maxVisibleSessions)
+        let estimatedHeight = CGFloat(max(1, totalSessionCount)) * (density == .compact ? 42 : 100)
+            + CGFloat(groups.filter { !$0.header.isEmpty }.count) * 25 + 8
+        let usesFixedViewport = onlySessionId == nil && (density == .comfortable
+            ? totalSessionCount > maxVisibleSessions
+            : estimatedHeight >= scrollBudget)
+        let heightKey = "\(groupingMode)|\(densityRaw)|\(contentFontSize)|" + groups.flatMap(\.ids).joined(separator: ",")
+        let warmHeight = contentHeight > 0 ? contentHeight : (appState.sessionListMeasuredHeights[heightKey] ?? estimatedHeight)
+        let viewportHeight = usesFixedViewport ? scrollBudget : min(scrollBudget, max(1, warmHeight))
         // Compact rows share their column widths so the status words line up.
         let fontSize = CGFloat(contentFontSize)
         let compactColumns: (project: CGFloat, status: CGFloat) = density == .compact
@@ -3057,54 +3099,70 @@ private struct SessionListView: View {
                 CompactSessionRowMetrics.statusColumnWidth(fontSize: CompactSessionRowMetrics.statusFontSize(fontSize))
             )
             : (0, 0)
-        let content = VStack(spacing: density == .compact ? CompactSessionRowMetrics.spacing : 6) {
-            ForEach(groups, id: \.header) { group in
-                if !group.header.isEmpty {
-                    HStack(spacing: 6) {
-                        if let src = group.source, let icon = cliIcon(source: src) {
-                            Image(nsImage: icon)
-                                .resizable()
-                                .frame(width: 14, height: 14)
-                        }
-                        Text(group.header)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.5))
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
-                }
-
-                ForEach(group.ids, id: \.self) { sessionId in
-                    if let session = appState.sessions[sessionId] {
-                        SessionCard(
-                            appState: appState,
-                            sessionId: sessionId,
-                            session: session,
-                            isCompletion: onlySessionId != nil,
-                            density: density,
-                            compactProjectWidth: compactColumns.project,
-                            compactStatusWidth: compactColumns.status
-                        )
-                    }
-                }
+        // Flatten groups: a lazy container must see individual cards, not one
+        // giant eager section containing every session for the same agent.
+        let entries: [SessionListEntry] = groups.flatMap { group in
+            let header: [SessionListEntry] = group.header.isEmpty ? [] : [
+                .init(id: "header:" + group.id, header: group.header, source: group.source, sessionId: nil)
+            ]
+            return header + group.ids.map {
+                .init(id: "session:" + $0, header: "", source: nil, sessionId: $0)
             }
-
-            // "Show all sessions" — hover with delay to expand
-            if onlySessionId != nil && appState.sessions.count > 1 {
-                SessionsExpandLink(count: appState.sessions.count) {
-                    withAnimation(NotchAnimation.open) {
-                        appState.surface = .sessionList
-                        appState.cancelCompletionQueue()
+        }
+        let rows = ForEach(entries) { entry in
+            if let sessionId = entry.sessionId {
+                if let session = appState.sessions[sessionId] {
+                    SessionCard(appState: appState, sessionId: sessionId, session: session,
+                                isCompletion: onlySessionId != nil, density: density,
+                                compactProjectWidth: compactColumns.project, compactStatusWidth: compactColumns.status)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    if let src = entry.source, let icon = cliIcon(source: src) {
+                        Image(nsImage: icon).resizable().frame(width: 14, height: 14)
+                    }
+                    Text(entry.header)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Spacer()
+                }
+                .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 2)
+            }
+        }
+        let content = Group {
+            if usesFixedViewport {
+                LazyVStack(spacing: density == .compact ? CompactSessionRowMetrics.spacing : 6) {
+                    rows
+                }
+            } else {
+                // Short lists and a single completion reply have an exact
+                // natural height; they do not need virtual estimates.
+                VStack(spacing: density == .compact ? CompactSessionRowMetrics.spacing : 6) {
+                    rows
+                    if onlySessionId != nil && appState.sessions.count > 1 {
+                        SessionsExpandLink(count: appState.sessions.count) {
+                            withAnimation(NotchAnimation.open) {
+                                appState.surface = .sessionList
+                                appState.cancelCompletionQueue()
+                            }
+                        }
                     }
                 }
             }
         }
+        // Keep decorative animations out of the expanded list.
+        .environment(\.mascotAnimationsActive, false)
         .padding(.vertical, 4)
         // The same in both branches: inside the scroll view the content still
         // lays out at its natural height, so switching never flips it back.
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            // A long LazyVStack has an estimated total height. Never feed it
+            // back into the viewport: that causes resizing as rows materialize.
+            guard onlySessionId == nil, !usesFixedViewport, height.isFinite, height > 0 else { return }
+            if abs(contentHeight - height) > 0.5 { contentHeight = height }
+            if appState.sessionListMeasuredHeights.count > 12 { appState.sessionListMeasuredHeights.removeAll() }
+            appState.sessionListMeasuredHeights[heightKey] = height
+        }
         // Cards needing you sort to the top — but not while the pointer is on
         // the list, where a card moving would put another under the cursor
         // just as it clicks. The list re-sorts once the pointer leaves. The
@@ -3130,10 +3188,14 @@ private struct SessionListView: View {
         }
 
         VStack(spacing: 0) {
-            if needsScroll {
-                ThinScrollView(maxHeight: SessionListMetrics.scrollHeight(maxVisibleSessions: maxVisibleSessions)) {
+            if onlySessionId == nil {
+                // The same native scroll/lazy tree survives height changes;
+                // offscreen cards no longer get constructed at disclosure.
+                ScrollView(.vertical) {
                     content
                 }
+                .scrollIndicators(.visible)
+                .frame(height: viewportHeight)
                 .clipShape(
                     UnevenRoundedRectangle(
                         topLeadingRadius: 0, bottomLeadingRadius: 20,
@@ -3154,6 +3216,7 @@ private struct SessionListView: View {
                 SessionListFooter(appState: appState, showUsageStats: showUsageStats, showClaudeQuota: showClaudeQuota)
             }
         }
+        .environment(\.mascotAnimationsActive, false)
     }
 }
 
@@ -3218,9 +3281,9 @@ private enum QuotaStyle {
     }
 
     /// One line per window for tooltips: "5h 3% · resets in 1h20m".
-    static func tooltip(_ snapshot: ClaudeQuotaSnapshot, stale: Bool, l10n: L10n, now: Date = Date()) -> String {
+    static func tooltip(_ snapshot: ClaudeQuotaSnapshot, stale: Bool, needsLogin: Bool = false, l10n: L10n, now: Date = Date()) -> String {
         var lines = snapshot.ordered.map { limit -> String in
-            var line = "\(label(limit, l10n: l10n)) \(ClaudeQuotaFormat.percent(limit.percent))"
+            var line = "\(label(limit, l10n: l10n)) \(ClaudeQuotaFormat.percent(needsLogin ? nil : limit.shownPercent(now: now)))"
             if let resetsAt = limit.resetsAt, let cd = ClaudeQuotaFormat.countdown(until: resetsAt, now: now) {
                 line += " · ↻ \(cd)"
             }
@@ -3229,7 +3292,7 @@ private enum QuotaStyle {
             }
             return line
         }
-        if stale { lines.append(l10n["quota_stale"]) }
+        if needsLogin { lines.append(l10n["quota_login_needed"]) } else if stale { lines.append(l10n["quota_stale"]) }
         return lines.joined(separator: "\n")
     }
 }
@@ -3352,6 +3415,8 @@ struct RightWingUsage: View {
     let stale: Bool
     /// In the collapsed bar the 5-hour window sits in the left chip.
     var weeklyOnly = false
+    /// Login broken: show "—" instead of numbers that can no longer refresh.
+    var needsLogin = false
     @ObservedObject private var l10n = L10n.shared
 
     static func enabled(showClaudeQuota: Bool, modeRaw: String) -> Bool {
@@ -3371,7 +3436,8 @@ struct RightWingUsage: View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             HStack(spacing: 7) {
                 ForEach(shown, id: \.kind) { limit in
-                    let color = QuotaStyle.color(limit)
+                    let value = needsLogin ? nil : limit.shownPercent(now: context.date)
+                    let color = value == nil ? Color.white.opacity(0.4) : QuotaStyle.color(limit)
                     HStack(spacing: 3) {
                         Text(limit.kind == .session ? "5h" : "W")
                             .font(.system(size: 9.5, weight: .medium, design: .monospaced))
@@ -3379,12 +3445,12 @@ struct RightWingUsage: View {
                         ZStack {
                             Circle().stroke(.white.opacity(0.18), lineWidth: 2)
                             Circle()
-                                .trim(from: 0, to: min(limit.percent / 100, 1))
+                                .trim(from: 0, to: min((value ?? 0) / 100, 1))
                                 .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                                 .rotationEffect(.degrees(-90))
                         }
                         .frame(width: 9, height: 9)
-                        Text(ClaudeQuotaFormat.percent(limit.percent))
+                        Text(ClaudeQuotaFormat.percent(value))
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(color)
                             .contentTransition(.numericText())
@@ -3392,7 +3458,7 @@ struct RightWingUsage: View {
                 }
             }
             .opacity(stale ? 0.55 : 1)
-            .help(QuotaStyle.tooltip(snapshot, stale: stale, l10n: l10n, now: context.date))
+            .help(QuotaStyle.tooltip(snapshot, stale: stale, needsLogin: needsLogin, l10n: l10n, now: context.date))
         }
         .animation(NotchAnimation.micro, value: shown.map(\.percent))
     }
@@ -3408,6 +3474,8 @@ struct QuotaChip: View {
     let stale: Bool
     /// Whether the pace mark has room under the percent (see `paceFits`).
     let showsPace: Bool
+    /// Login broken: show "—" instead of numbers that can no longer refresh.
+    let needsLogin: Bool
     @ObservedObject private var l10n = L10n.shared
 
     /// Longest window label the chip shows. A model-scoped window is named by
@@ -3432,11 +3500,12 @@ struct QuotaChip: View {
         38 + CGFloat(label(for: limit, l10n: L10n.shared).count) * 6.2
     }
 
-    init(limit: ClaudeQuotaLimit, snapshot: ClaudeQuotaSnapshot, stale: Bool, showsPace: Bool) {
+    init(limit: ClaudeQuotaLimit, snapshot: ClaudeQuotaSnapshot, stale: Bool, showsPace: Bool, needsLogin: Bool = false) {
         self.limit = limit
         self.snapshot = snapshot
         self.stale = stale
         self.showsPace = showsPace
+        self.needsLogin = needsLogin
     }
 
     /// Shared resolution for the chip's limit so the bar width and the wing
@@ -3454,7 +3523,8 @@ struct QuotaChip: View {
     }
 
     private func chip(now: Date) -> some View {
-        let color = QuotaStyle.color(limit)
+        let value = needsLogin ? nil : limit.shownPercent(now: now)
+        let color = value == nil ? Color.white.opacity(0.4) : QuotaStyle.color(limit)
         return HStack(spacing: 3) {
             // Which window this is: 5h / week / model name.
             Text(Self.label(for: limit, l10n: l10n))
@@ -3464,18 +3534,18 @@ struct QuotaChip: View {
             ZStack {
                 Circle().stroke(.white.opacity(0.18), lineWidth: 2)
                 Circle()
-                    .trim(from: 0, to: min(limit.percent / 100, 1))
+                    .trim(from: 0, to: min((value ?? 0) / 100, 1))
                     .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
             .frame(width: 9, height: 9)
-            Text(ClaudeQuotaFormat.percent(limit.percent))
+            Text(ClaudeQuotaFormat.percent(value))
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(color)
-                .modifier(QuotaPaceMark(pace: showsPace ? limit.pace(now: now) : nil))
+                .modifier(QuotaPaceMark(pace: showsPace && value != nil ? limit.pace(now: now) : nil))
         }
         .opacity(stale ? 0.55 : 1)
-        .help(QuotaStyle.tooltip(snapshot, stale: stale, l10n: l10n, now: now))
+        .help(QuotaStyle.tooltip(snapshot, stale: stale, needsLogin: needsLogin, l10n: l10n, now: now))
     }
 }
 
@@ -3607,24 +3677,33 @@ struct SessionListFooter: View {
     let showClaudeQuota: Bool
 
     var body: some View {
-        let usage = UsageFooterText.shownUsage(appState.claudeUsage, enabled: showUsageStats)
-        let snapshot = appState.claudeQuota.snapshot
-        let error = appState.claudeQuota.lastError
-        let content = SessionListFooterContent.resolve(
-            showClaudeQuota: showClaudeQuota,
-            hasSnapshot: snapshot != nil,
-            hasError: error != nil,
-            hasUsage: usage != nil
-        )
-        if content.limits, let snapshot {
-            QuotaFooterLine(snapshot: snapshot, error: error, usage: usage)
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            HStack(alignment: .top, spacing: 9) {
+                ProviderQuotaRow(
+                    title: "Claude",
+                    snapshot: showClaudeQuota && !appState.claudeQuota.needsLogin ? appState.claudeQuota.snapshot : nil,
+                    stale: appState.claudeQuota.lastError != nil,
+                    unavailable: !showClaudeQuota ? "Выключено" : (appState.claudeQuota.needsLogin ? "Нужен вход" : "Нет данных"),
+                    now: context.date
+                )
+                .frame(maxWidth: .infinity)
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 26)
+                OpenRouterBalanceRow(monitor: appState.openRouter)
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 26)
+                ProviderQuotaRow(title: "Codex", snapshot: appState.codexQuota.snapshot,
+                                 stale: appState.codexQuota.isStale, unavailable: "Нет данных", now: context.date)
+                    .frame(maxWidth: .infinity)
+                    .help("Codex: использованная доля лимита. Данные последней локальной сессии; обновляются во время работы.")
+            }
+            .frame(maxWidth: .infinity)
         }
-        if content.tokens, let usage {
-            UsageFooterLine(usage: usage)
-        }
-        if content.quotaMessage, let error {
-            QuotaFooterMessage(error: error)
-        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        // Animate the footer as one geometry group rather than relaying the
+        // shell's spring through every tiny quota track and numeric label.
+        .geometryGroup()
+        .onAppear { appState.openRouter.retain(); appState.codexQuota.retain() }
+        .onDisappear { appState.openRouter.release(); appState.codexQuota.release() }
     }
 }
 
@@ -4213,7 +4292,6 @@ private struct SessionCard: View {
     var compactStatusWidth: CGFloat = 64
     @State private var hovering = false
     @State private var failureShakeOffset: CGFloat = 0
-    @State private var jumpValidationTask: Task<Void, Never>?
     @State private var showApprovalDetails = false
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
@@ -4284,10 +4362,6 @@ private struct SessionCard: View {
         .contentShape(Rectangle())
         .onTapGesture { handleSessionClick() }
         .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
-        .onDisappear {
-            jumpValidationTask?.cancel()
-            jumpValidationTask = nil
-        }
     }
 
     // MARK: Comfortable card
@@ -4352,7 +4426,7 @@ private struct SessionCard: View {
     /// Character + subagent icons.
     private var mascotColumn: some View {
         VStack(spacing: 3) {
-            MascotView(source: session.mascotSource, status: session.status, size: 32)
+            MascotView(source: session.mascotSource, status: session.status, size: 32, animated: false)
             if showAgentDetails && !session.subagents.isEmpty {
                 let sorted = session.subagents.values.sorted { $0.startTime < $1.startTime }
                 // Grid: 4 per row, 8px icons
@@ -4638,7 +4712,7 @@ private struct SessionCard: View {
         let expands = compactExpands
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                MascotView(source: session.mascotSource, status: session.status, size: 18)
+                MascotView(source: session.mascotSource, status: session.status, size: 18, animated: false)
                     .frame(width: 22)
                 Text(session.headline(showProjectName: showProjectName).text)
                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))
@@ -4765,8 +4839,16 @@ private struct SessionCard: View {
 
         guard autoCollapseAfterSessionJump, session.canJumpFromNotch else { return }
 
-        jumpValidationTask?.cancel()
-        jumpValidationTask = Task {
+        appState.sessionJumpValidationTasks[sessionId]?.cancel()
+        let validationId = UUID()
+        appState.sessionJumpValidationIds[sessionId] = validationId
+        appState.sessionJumpValidationTasks[sessionId] = Task {
+            defer {
+                if appState.sessionJumpValidationIds[sessionId] == validationId {
+                    appState.sessionJumpValidationTasks.removeValue(forKey: sessionId)
+                    appState.sessionJumpValidationIds.removeValue(forKey: sessionId)
+                }
+            }
             let delays: [UInt64] = [120_000_000, 320_000_000, 640_000_000]
             let outcome = await evaluateJumpValidation(
                 delays: delays,
@@ -5593,6 +5675,7 @@ private struct TypingIndicator: View {
     var bright: Bool = false
     var color: Color? = nil
     @State private var phase: CGFloat = -60
+    @Environment(\.mascotAnimationsActive) private var animationsActive
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -5631,7 +5714,7 @@ private struct TypingIndicator: View {
                 .onAppear {
                     phase = startPhase
                     // Reduce Motion: the label stays, the endless shimmer goes.
-                    guard !reduceMotion else { return }
+                    guard !reduceMotion, animationsActive else { return }
                     withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
                         phase = endPhase
                     }
@@ -5865,4 +5948,56 @@ private func stripDirectives(_ text: String) -> String {
 
     let cleaned = result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned
+}
+
+// MARK: - OpenRouter (while Hermes works)
+
+/// Measured width of the left OpenRouter chip, like `QuotaChipWidthKey`.
+struct OpenRouterChipWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = Swift.max(value, nextValue())
+    }
+}
+
+/// One OpenRouter number for the collapsed bar: spent today (left wing) or
+/// balance (right wing), coloured by the Gemini palette.
+struct OpenRouterChip: View {
+    enum Kind { case spentToday, balance }
+    let monitor: OpenRouterUsageMonitor
+    let kind: Kind
+
+    static let estimatedWidth: CGFloat = 66
+
+    private var value: Double? {
+        kind == .spentToday ? monitor.spentToday : monitor.balance
+    }
+
+    private var color: Color {
+        guard let value else { return .white.opacity(0.4) }
+        let level = kind == .spentToday
+            ? OpenRouterUsageMonitor.spendLevel(value)
+            : OpenRouterUsageMonitor.balanceLevel(value)
+        return OpenRouterUsageMonitor.color(level)
+    }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(kind == .spentToday ? "day" : "bal")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1)
+            Text(OpenRouterUsageMonitor.money(value))
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(color)
+                .contentTransition(.numericText())
+                .lineLimit(1)
+        }
+        .fixedSize()
+        .opacity(monitor.isStale && value != nil ? 0.55 : 1)
+        .animation(NotchAnimation.micro, value: value)
+        .help(monitor.tooltip)
+        .onAppear { monitor.retain() }
+        .onDisappear { monitor.release() }
+    }
 }

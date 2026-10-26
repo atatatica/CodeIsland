@@ -1109,6 +1109,16 @@ public func reduceEvent(
         return effects
     }
 
+    // Hermes runs a background review (memory/skills) after a reply. That
+    // fork shares the session id and fires tool hooks, but no turn hooks, so
+    // its tools would revive the card with nothing to settle it again. After
+    // a Hermes turn ends, drop tool events until the next pre_llm_call.
+    if sessions[sessionId]?.source == "hermes",
+       sessions[sessionId]?.taskRoundEnded == true,
+       ["PreToolUse", "PostToolUse", "PostToolUseFailure"].contains(eventName) {
+        return effects
+    }
+
     // Codex may flush already queued tool hooks after an Interrupt. Keep the
     // terminal state latched until a new prompt/session starts so stale work
     // cannot revive the card as processing.
@@ -1429,6 +1439,9 @@ public func reduceEvent(
         } else {
             sessions[sessionId]?.interrupted = wasInterrupted
             sessions[sessionId]?.status = .idle
+            if sessions[sessionId]?.source == "hermes" {
+                sessions[sessionId]?.taskRoundEnded = true
+            }
             sessions[sessionId]?.currentTool = nil
             sessions[sessionId]?.toolDescription = nil
             // A Hermes gateway chat's turn settles its card without a completion.

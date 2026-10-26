@@ -340,8 +340,31 @@ final class AppState {
     /// Local-transcript token usage shown in the session-list footer.
     /// Refreshed lazily on panel expansion (no resident timer, no API calls).
     var claudeUsage: ClaudeUsageScanner.Snapshot?
+    /// Last natural height for short expanded lists. Not observable: this is a
+    /// layout warm-start cache, not a second source of session/UI state.
+    @ObservationIgnored var sessionListMeasuredHeights: [String: CGFloat] = [:]
+    @ObservationIgnored var sessionJumpValidationTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var sessionJumpValidationIds: [String: UUID] = [:]
     /// Subscription rate limits (5h / weekly) from Anthropic — opt-in, network.
     let claudeQuota = ClaudeQuotaMonitor()
+    /// OpenRouter spend/balance, shown in the wings while Hermes is on the bar.
+    let openRouter = OpenRouterUsageMonitor()
+    let codexQuota = CodexQuotaMonitor()
+    /// The session whose mascot the collapsed bar shows: the displayed one
+    /// while it works; once it is idle, the one with the latest activity
+    /// (the agent that worked last), so its mascot stays on the island.
+    var barSession: SessionSnapshot? {
+        let sid = rotatingSessionId ?? activeSessionId ?? sessions.keys.sorted().first
+        if let sid, let session = sessions[sid], session.status != .idle { return session }
+        return sessions.values.max { $0.lastActivity < $1.lastActivity }
+    }
+    /// The bar shows the Hermes mascot (working or the last one that worked).
+    var hermesOnBar: Bool {
+        SessionSnapshot.normalizedSupportedSource(barSession?.mascotSource) == "hermes"
+    }
+    var codexOnBar: Bool {
+        SessionSnapshot.normalizedSupportedSource(barSession?.mascotSource) == "codex"
+    }
     /// Process-wide, not per-instance: the scan reads one shared history
     /// (`~/.claude`), so two concurrent runs are always duplicate work. Production
     /// has a single AppState and never noticed, but anything constructing several —

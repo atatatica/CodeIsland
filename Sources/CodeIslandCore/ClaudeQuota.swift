@@ -109,6 +109,12 @@ public struct ClaudeQuotaLimit: Equatable, Sendable {
         )
     }
 
+    /// The percent the bar can still show: nil once the window has reset,
+    /// because `percent` then belongs to the previous window.
+    public func shownPercent(now: Date = Date()) -> Double? {
+        hasReset(now: now) ? nil : percent
+    }
+
     public var isOverLimit: Bool { percent >= 100 }
 
     /// Severity bucket for colouring; tolerant of unknown server strings.
@@ -333,6 +339,11 @@ public enum ClaudeQuotaFormat {
 
     public static func percent(_ value: Double) -> String {
         "\(Int(value.rounded()))%"
+    }
+
+    /// "—" when the value is unknown (window reset, login broken).
+    public static func percent(_ value: Double?) -> String {
+        value.map { percent($0) } ?? "—"
     }
 
     /// Signed pace points: "+32" / "−39" / "±0". U+2212 so the minus is as

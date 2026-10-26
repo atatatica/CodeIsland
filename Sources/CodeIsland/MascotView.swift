@@ -19,6 +19,9 @@ struct MascotView: View {
     let source: String
     let status: MascotAgentStatus
     var size: CGFloat = 27
+    /// Expanded lists keep status poses without a live display-link per card.
+    var animated: Bool = true
+    @Environment(\.mascotAnimationsActive) private var parentAnimationsActive
     @AppStorage(SettingsKey.mascotSpeed) private var speedPct = SettingsDefaults.mascotSpeed
     @ObservedObject private var animationGate = MascotAnimationGate.shared
 
@@ -60,7 +63,8 @@ struct MascotView: View {
             case "workbuddy":
                 WorkBuddyView(status: status, size: size)
             case "hermes":
-                HermesView(status: status, size: size)
+                // Misha prefers the friendly Gemini mascot for Hermes (24.10.2026).
+                GeminiView(status: status, size: size)
             case "openclaw":
                 OpenClawView(status: status, size: size)
             case "kiro":
@@ -80,7 +84,15 @@ struct MascotView: View {
             }
         }
         .environment(\.mascotSpeed, Double(speedPct) / 100.0)
-        .environment(\.mascotAnimationsActive, animationGate.animationsActive)
+        .environment(\.mascotAnimationsActive, animated && parentAnimationsActive && animationGate.animationsActive)
         .environment(\.mascotAnimationEpoch, animationGate.epoch)
+        .transaction { transaction in
+            if !animated || !parentAnimationsActive || !animationGate.animationsActive {
+                // Some mascots also contain repeatForever alert pulses outside
+                // MascotTimeline. Stop those as well as the periodic canvases.
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
     }
 }
