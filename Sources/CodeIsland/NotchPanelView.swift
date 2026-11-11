@@ -438,7 +438,7 @@ struct NotchPanelView: View {
                             AgendaPanel(appState: appState, showClaudeQuota: showClaudeQuota, showUsageStats: showUsageStats)
                                 .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                         } else {
-                            SessionListView(appState: appState, onlySessionId: nil)
+                            SessionListView(appState: appState, onlySessionId: nil, headerHeight: notchHeight + 0.5)
                                 .frame(width: expandedContentWidth)
                                 .geometryGroup()
                                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -2919,6 +2919,17 @@ enum SessionListMetrics {
         CGFloat(maxVisibleSessions) * heightPerSession
     }
 
+    /// The viewport shares the actual window with the header and the measured
+    /// footer (including the optional calendar strip). Keep the shell's bottom
+    /// inside the window, even when the screen caps a large session setting.
+    static func availableScrollHeight(
+        maxVisibleSessions: Int, windowHeight: CGFloat,
+        headerHeight: CGFloat, footerHeight: CGFloat
+    ) -> CGFloat {
+        min(scrollHeight(maxVisibleSessions: maxVisibleSessions),
+            max(1, windowHeight - headerHeight - footerHeight - 8))
+    }
+
     /// Scroll once there are more sessions than the setting shows — or fewer,
     /// but taller than the room budgeted for them: cards with a task list, an
     /// approval row or a recap run well past 90pt each, and four of them used
@@ -2962,6 +2973,9 @@ private struct SessionListView: View {
     var appState: AppState
     /// When set, only show this session (auto-expand on completion)
     var onlySessionId: String? = nil
+    var headerHeight: CGFloat = 32.5
+    @Environment(CompletionCardSpace.self) private var panelSpace: CompletionCardSpace?
+    @State private var footerHeight: CGFloat = 46
     @AppStorage(SettingsKey.sessionGroupingMode) private var groupingMode = SettingsDefaults.sessionGroupingMode
     @AppStorage(SettingsKey.maxVisibleSessions) private var maxVisibleSessions = SettingsDefaults.maxVisibleSessions
     @AppStorage(SettingsKey.showUsageStats) private var showUsageStats = SettingsDefaults.showUsageStats
@@ -3037,6 +3051,7 @@ private struct SessionListView: View {
                 ("opencode", "OpenCode"),
                 ("mimo", "MiMo"),
                 ("pi", "Pi"),
+                ("omp", "omp"),
                 ("kiro", "Kiro"),
                 ("cline", "Cline"),
                 ("zcode", "ZCode"),
@@ -3076,7 +3091,13 @@ private struct SessionListView: View {
         let groups = groupedSessions
         let totalSessionCount = groups.reduce(0) { $0 + $1.ids.count }
         let density = self.density
-        let scrollBudget = SessionListMetrics.scrollHeight(maxVisibleSessions: maxVisibleSessions)
+        let measuredWindowHeight = panelSpace?.windowHeight ?? 0
+        let windowHeight = measuredWindowHeight > 0 ? measuredWindowHeight
+            : PanelHeightMetrics.desiredHeight(maxVisibleSessions: maxVisibleSessions)
+        let scrollBudget = SessionListMetrics.availableScrollHeight(
+            maxVisibleSessions: maxVisibleSessions, windowHeight: windowHeight,
+            headerHeight: headerHeight, footerHeight: footerHeight
+        )
         let estimatedHeight = CGFloat(max(1, totalSessionCount)) * (density == .compact ? 42 : 100)
             + CGFloat(groups.filter { !$0.header.isEmpty }.count) * 25 + 8
         let usesFixedViewport = onlySessionId == nil && (density == .comfortable
@@ -3150,8 +3171,6 @@ private struct SessionListView: View {
                 }
             }
         }
-        // Keep decorative animations out of the expanded list.
-        .environment(\.mascotAnimationsActive, false)
         .padding(.vertical, 4)
         // The same in both branches: inside the scroll view the content still
         // lays out at its natural height, so switching never flips it back.
@@ -3210,13 +3229,19 @@ private struct SessionListView: View {
             // Full session list only — the completion card stays focused on
             // the finished session.
             if onlySessionId == nil {
-                if showCalendar {
-                    NextEventStrip()
+                VStack(spacing: 0) {
+                    if showCalendar {
+                        NextEventStrip()
+                    }
+                    SessionListFooter(appState: appState, showUsageStats: showUsageStats, showClaudeQuota: showClaudeQuota)
                 }
-                SessionListFooter(appState: appState, showUsageStats: showUsageStats, showClaudeQuota: showClaudeQuota)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    guard height.isFinite, height > 0, abs(footerHeight - height) > 0.5 else { return }
+                    footerHeight = height
+                }
             }
         }
-        .environment(\.mascotAnimationsActive, false)
     }
 }
 
@@ -4426,7 +4451,7 @@ private struct SessionCard: View {
     /// Character + subagent icons.
     private var mascotColumn: some View {
         VStack(spacing: 3) {
-            MascotView(source: session.mascotSource, status: session.status, size: 32, animated: false)
+            MascotView(source: session.mascotSource, status: session.status, size: 32)
             if showAgentDetails && !session.subagents.isEmpty {
                 let sorted = session.subagents.values.sorted { $0.startTime < $1.startTime }
                 // Grid: 4 per row, 8px icons
@@ -4712,7 +4737,7 @@ private struct SessionCard: View {
         let expands = compactExpands
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                MascotView(source: session.mascotSource, status: session.status, size: 18, animated: false)
+                MascotView(source: session.mascotSource, status: session.status, size: 18)
                     .frame(width: 22)
                 Text(session.headline(showProjectName: showProjectName).text)
                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))

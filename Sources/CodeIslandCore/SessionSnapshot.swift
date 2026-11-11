@@ -39,6 +39,7 @@ public struct SessionSnapshot: Sendable {
         "qwen",
         "kimi",
         "pi",
+        "omp",
         "kiro",
         "cline",
         "dsh",
@@ -365,9 +366,9 @@ public struct SessionSnapshot: Sendable {
             "trae_cn": "traecn",
             "trae cn": "traecn",
             "traecli": "traecli",
-            "omp": "pi",
-            "oh-my-pi": "pi",
-            "oh my pi": "pi",
+            "omp": "omp",
+            "oh-my-pi": "omp",
+            "oh my pi": "omp",
             "z-code": "zcode",
             "z code": "zcode",
             // MiniMax Code CLI — the executable is `mcode` (npm @minimax-ai/code)
@@ -730,6 +731,7 @@ public struct SessionSnapshot: Sendable {
         case "qwen": return "Qwen Code"
         case "kimi": return "Kimi Code CLI"
         case "pi": return "Pi"
+        case "omp": return "omp"
         case "kiro": return "Kiro"
         case "cline": return "Cline"
         case "zcode": return "ZCode"

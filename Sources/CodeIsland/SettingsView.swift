@@ -1672,7 +1672,7 @@ private struct MascotsPage: View {
         ("Kiro", "kiro", "Kiro", Color(red: 0.62, green: 0.45, blue: 1.0)),
         ("MiniMax", "minimax", "MiniMax Code CLI", Color(red: 1.0, green: 0.36, blue: 0.30)),
         ("Pi", "pi", "Pi", Color(red: 0.55, green: 0.43, blue: 0.95)),
-        ("Oh My Pi", "omp", "Oh My Pi", Color(red: 0.55, green: 0.43, blue: 0.95)),
+        ("omp", "omp", "omp (Oh My Pi)", Color(red: 0.42, green: 0.30, blue: 0.85)),
         ("OpBot", "opencode", "OpenCode", Color(red: 0.55, green: 0.55, blue: 0.57)),
         ("MiMoBot", "mimo", "MiMo Code / Xiaomi MiMo", Color(red: 1.0, green: 0.41, blue: 0.0)),
         ("ClineBot", "cline", "Cline", Color(red: 0.00, green: 0.70, blue: 0.49)),

@@ -1286,7 +1286,7 @@ final class AppState {
         case "grok":       return findGrokPids(candidatePids: candidatePids)
         case "qwen":       return findQwenPids(candidatePids: candidatePids)
         case "kimi":       return findKimiPids(candidatePids: candidatePids)
-        case "pi":         return findPiPids(candidatePids: candidatePids)
+        case "pi", "omp":  return findPiPids(candidatePids: candidatePids)
         case "cline":      return findClinePids(candidatePids: candidatePids)
         case "zcode":      return findZcodePids(candidatePids: candidatePids)
         case "minimax":    return findMinimaxPids(candidatePids: candidatePids)
@@ -1533,7 +1533,7 @@ final class AppState {
         // Marker-enabled OMP explicitly guarantees that its native ask dialog
         // races CodeIsland. Pi and legacy OMP block here, so hiding their card deadlocks.
         if event.toolName == "AskUserQuestion",
-           (source != "pi" || !nativeAskIsRacing) {
+           ((source != "pi" && source != "omp") || !nativeAskIsRacing) {
             return true
         }
         return shouldAutoOpenPendingSurface(
@@ -2873,7 +2873,7 @@ final class AppState {
         // the same plugin against OpenCode 1.x's question API.
         let detailsSource = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String)
         if !answerDetails.isEmpty,
-           (detailsSource == "pi" && event.toolUseId != nil)
+           ((detailsSource == "pi" || detailsSource == "omp") && event.toolUseId != nil)
             || detailsSource == "opencode" || detailsSource == "mimo" {
             updatedInput["_codeislandAnswerDetails"] = answerDetails
         }

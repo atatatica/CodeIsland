@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v8
+// version: v9
 // OMP-compatible install
 
 /**
@@ -240,8 +240,8 @@ function base(
 ): Record<string, unknown> {
   const env = collectEnv();
   return {
-    session_id: `pi-${sessionId}`,
-    _source: "pi",
+    session_id: `omp-${sessionId}`,
+    _source: "omp",
     _ppid: process.pid,
     _env: env,
     ...herdrMetadata(env),

@@ -71,8 +71,10 @@ struct MascotView: View {
                 KiroView(status: status, size: size)
             case "kimi":
                 KimiView(status: status, size: size)
-            case "pi", "omp":
+            case "pi":
                 PiView(status: status, size: size)
+            case "omp":
+                OmpView(status: status, size: size)
             case "cline":
                 ClineView(status: status, size: size)
             case "aiwork", "aiwork-cli":
